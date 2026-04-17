@@ -1,0 +1,24 @@
+[build-system]
+requires = ["setuptools>=68.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "quackaloger"
+version = "1.0.0"
+description = "Organize audiobook libraries for Audiobookshelf"
+requires-python = ">=3.10"
+dependencies = [
+    "mutagen",
+    "requests",
+    "PyYAML",
+    "openai",
+    "rich",
+    "questionary",
+    "pyfiglet",
+]
+
+[tool.setuptools.packages.find]
+where = ["."]
+
+[project.scripts]
+quackaloger = "quackaloger.cli:main"
