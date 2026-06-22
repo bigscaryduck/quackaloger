@@ -278,6 +278,31 @@ class UI:
             return questionary.text(msg, default=default).ask() or default
         return input(f"  {msg} [{default}]: ").strip() or default
 
+    def prompt_checkbox(
+        self,
+        msg: str,
+        choices: Sequence[str],
+    ) -> list[str]:
+        """Return selected choice strings (may be empty)."""
+        if self.is_interactive:
+            import questionary
+
+            picked = questionary.checkbox(msg, choices=list(choices)).ask()
+            return list(picked or [])
+        self._console.print(f"  {msg}")
+        for i, c in enumerate(choices, 1):
+            self._console.print(f"    [{i}] {c}")
+        raw = input("  Enter numbers to enable (e.g. 1 3): ").strip()
+        out: list[str] = []
+        for part in raw.split():
+            try:
+                idx = int(part) - 1
+                if 0 <= idx < len(choices):
+                    out.append(choices[idx])
+            except ValueError:
+                continue
+        return out
+
     # ------------------------------------------------------------------
     # Report rendering (terminal only -- disk stays plain text)
     # ------------------------------------------------------------------
@@ -295,10 +320,10 @@ class UI:
         tbl.add_row("Files to move", str(len(report.moves)))
         tbl.add_row("Already correct", str(len(report.already_correct)))
         tbl.add_row(
-            "Audible matched", str(report.audible_stats.get("matched", 0))
+            "Catalog matched", str(report.audible_stats.get("matched", 0))
         )
         tbl.add_row(
-            "Audible unmatched", str(report.audible_stats.get("unmatched", 0))
+            "Catalog unmatched", str(report.audible_stats.get("unmatched", 0))
         )
         tbl.add_row("Conflicts", str(len(report.conflicts)))
         tbl.add_row("Quarantined", str(len(report.quarantine)))
@@ -344,10 +369,10 @@ class UI:
         tbl.add_row("Files to move", str(len(report.moves)))
         tbl.add_row("Already correct", str(len(report.already_correct)))
         tbl.add_row(
-            "Audible matched", str(report.audible_stats.get("matched", 0))
+            "Catalog matched", str(report.audible_stats.get("matched", 0))
         )
         tbl.add_row(
-            "Audible unmatched", str(report.audible_stats.get("unmatched", 0))
+            "Catalog unmatched", str(report.audible_stats.get("unmatched", 0))
         )
         tbl.add_row("Conflicts", str(len(report.conflicts)))
         tbl.add_row("Quarantined", str(len(report.quarantine)))
@@ -362,6 +387,9 @@ class UI:
             self._console.print(
                 f"\n  [{book.book_id}] {rel}", style=STYLE_PHASE
             )
+            dt = getattr(book, "domain_tag", "") or ""
+            if dt:
+                self.muted(f"Domain: {dt}")
             self.info(f"Files: {[f.filename for f in book.files]}")
             if book.audible_match:
                 am = book.audible_match

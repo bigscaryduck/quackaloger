@@ -12,9 +12,9 @@ from quackaloger.constants import (
     AUDIBLE_CATALOG_URL,
     AUDNEXUS_BOOK_URL,
     DEFAULT_AUDIBLE_REQUEST_DELAY,
-    DEFAULT_GPT_MODEL,
     DEFAULT_MAX_AUDIBLE_CANDIDATES,
 )
+from quackaloger.llm import ExtractError
 from quackaloger.models import AudibleMatch, Book
 from quackaloger.ui import ui
 
@@ -23,10 +23,29 @@ try:
 except ImportError:
     _requests = None
 
-try:
-    from openai import OpenAI as _OpenAI
-except ImportError:
-    _OpenAI = None
+
+ASIN_PICK_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "asin": {
+            "type": "string",
+            "description": "10-character Audible ASIN from the candidate list, or empty string if none",
+        },
+    },
+    "required": ["asin"],
+}
+
+BOOK_IDENT_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "title": {"type": "string"},
+        "author": {"type": "string"},
+        "series": {"type": "string"},
+        "sequence": {"type": "string"},
+        "narrator": {"type": "string"},
+    },
+    "required": ["title", "author", "series", "sequence", "narrator"],
+}
 
 
 # ---------------------------------------------------------------------------
@@ -295,9 +314,8 @@ def _build_ai_picker_prompt(book: Book, candidates: list, max_candidates: int) -
 
     lines.append("")
     lines.append(
-        "Reply with ONLY the ASIN of the best matching English-language result, "
-        "or NONE if no result is a good match for this audiobook. "
-        "Do not explain your reasoning."
+        "Submit the structured result: field 'asin' must be the 10-character ASIN of the best "
+        "matching English-language result from the list above, or an empty string if none fit."
     )
 
     return "\n".join(lines)
@@ -306,33 +324,30 @@ def _build_ai_picker_prompt(book: Book, candidates: list, max_candidates: int) -
 def _ai_pick_best_match(
     book: Book,
     candidates: list,
-    openai_client,
-    model: str = DEFAULT_GPT_MODEL,
+    extract_client,
     max_candidates: int = DEFAULT_MAX_AUDIBLE_CANDIDATES,
     verbose: bool = False,
 ) -> Optional[str]:
-    """Use GPT-4o-mini to pick the best ASIN. Returns ASIN string or None."""
-    if not candidates or openai_client is None:
+    """Use configured LLM (tool extraction) to pick the best ASIN. Returns ASIN string or None."""
+    if not candidates or extract_client is None:
         return None
 
     prompt = _build_ai_picker_prompt(book, candidates, max_candidates)
 
     if verbose:
-        ui.verbose(f"[AI] Asking {model} to pick from {len(candidates)} candidates")
+        ui.verbose("[AI] Tool extraction: pick ASIN from candidates")
 
     try:
-        response = openai_client.chat.completions.create(
-            model=model,
-            messages=[{"role": "user", "content": prompt}],
-            max_tokens=20,
+        data = extract_client.extract(
+            [{"role": "user", "content": prompt}],
+            ASIN_PICK_SCHEMA,
             temperature=0.0,
         )
-        answer = response.choices[0].message.content.strip().upper()
-
+        answer = (data.get("asin") or "").strip().upper()
         if verbose:
-            ui.verbose(f"[AI] Response: {answer}")
+            ui.verbose(f"[AI] Response asin field: {answer!r}")
 
-        if answer == "NONE" or not answer:
+        if answer in ("", "NONE", "NULL"):
             return None
 
         asin_match = re.search(r"[A-Z0-9]{10}", answer)
@@ -345,20 +360,23 @@ def _ai_pick_best_match(
                 ui.verbose(f"[AI] Returned ASIN {picked} not in candidate list, ignoring")
         return None
 
+    except ExtractError as e:
+        if verbose:
+            ui.verbose(f"[AI] Extraction failed: {e}")
+        return None
     except Exception as e:
         if verbose:
-            ui.verbose(f"[AI] GPT call failed: {e}")
+            ui.verbose(f"[AI] LLM call failed: {e}")
         return None
 
 
 def _ai_identify_book(
     book: Book,
-    openai_client,
-    model: str = DEFAULT_GPT_MODEL,
+    extract_client,
     verbose: bool = False,
 ) -> Optional[AudibleMatch]:
     """Use AI to identify a book from local metadata alone when all API lookups fail."""
-    if openai_client is None:
+    if extract_client is None:
         return None
 
     first = book.files[0]
@@ -395,52 +413,44 @@ def _ai_identify_book(
 
     lines.append("")
     lines.append(
-        "Reply in EXACTLY this format (one field per line, no extra text):\n"
-        "TITLE: <the book title without series name or book number>\n"
-        "AUTHOR: <author name>\n"
-        "SERIES: <series name, or NONE if not part of a series>\n"
-        "SEQUENCE: <book number in series, or NONE>\n"
-        "NARRATOR: <narrator name if you know it, or NONE>"
+        "Return a tool payload with keys title, author, series, sequence, narrator. "
+        "Use empty string for unknown optional fields."
     )
 
     prompt = "\n".join(lines)
 
     if verbose:
-        ui.verbose(f"[AI] Asking {model} to identify book from local metadata")
+        ui.verbose("[AI] Tool extraction: identify book from local metadata")
 
     try:
-        response = openai_client.chat.completions.create(
-            model=model,
-            messages=[{"role": "user", "content": prompt}],
-            max_tokens=100,
+        data = extract_client.extract(
+            [{"role": "user", "content": prompt}],
+            BOOK_IDENT_SCHEMA,
             temperature=0.0,
         )
-        answer = response.choices[0].message.content.strip()
-
-        if verbose:
-            for line in answer.splitlines():
-                ui.verbose(f"[AI] {line}")
-
-        fields = {}
-        for line in answer.splitlines():
-            if ":" in line:
-                key, _, val = line.partition(":")
-                val = val.strip()
-                if val.upper() != "NONE" and val:
-                    fields[key.strip().upper()] = val
-
-        if not fields.get("TITLE"):
+        title = (data.get("title") or "").strip()
+        if not title:
             return None
+        author = (data.get("author") or "").strip() or None
+        series = (data.get("series") or "").strip() or None
+        sequence = (data.get("sequence") or "").strip() or None
+        narrator = (data.get("narrator") or "").strip() or None
+        if verbose:
+            ui.verbose(f"[AI] title={title!r} author={author!r} series={series!r}")
 
         return AudibleMatch(
-            title=fields.get("TITLE"),
-            author=fields.get("AUTHOR"),
-            series=fields.get("SERIES"),
-            sequence=fields.get("SEQUENCE"),
-            narrator=fields.get("NARRATOR"),
+            title=title,
+            author=author,
+            series=series,
+            sequence=sequence,
+            narrator=narrator,
             confidence=0.90,
         )
 
+    except ExtractError as e:
+        if verbose:
+            ui.verbose(f"[AI] Identification extraction failed: {e}")
+        return None
     except Exception as e:
         if verbose:
             ui.verbose(f"[AI] Identification failed: {e}")
@@ -451,13 +461,12 @@ def _ai_identify_book(
 # Main lookup orchestrator
 # ---------------------------------------------------------------------------
 
-def lookup_book(book: Book, cache: dict, cfg: Config, openai_client=None) -> Optional[AudibleMatch]:
+def lookup_book(book: Book, cache: dict, cfg: Config, extract_client=None) -> Optional[AudibleMatch]:
     """Look up a book on Audible. Returns the best AudibleMatch or None."""
     verbose = cfg.verbosity in ("verbose", "debug")
     delay = cfg.audible_request_delay
     catalog_url = cfg.audible_catalog_url
     audnexus_url = cfg.audnexus_url
-    model = cfg.openai_model
     max_candidates = cfg.max_audible_candidates
 
     # Collect ASINs from ID3 tags
@@ -531,7 +540,7 @@ def lookup_book(book: Book, cache: dict, cfg: Config, openai_client=None) -> Opt
             if verbose:
                 ui.verbose(f"[AUDIBLE] Cache hit for search '{search_title}' by '{search_author}'")
             return AudibleMatch(**cached)
-        if not openai_client:
+        if not extract_client:
             if verbose:
                 ui.verbose(f"[AUDIBLE] Cache says no result for '{search_title}'")
             return None
@@ -557,8 +566,8 @@ def lookup_book(book: Book, cache: dict, cfg: Config, openai_client=None) -> Opt
         products = _search_audible_catalog(base_title, None, catalog_url=catalog_url, verbose=verbose)
 
     if not products:
-        if openai_client:
-            ai_match = _ai_identify_book(book, openai_client, model=model, verbose=verbose)
+        if extract_client:
+            ai_match = _ai_identify_book(book, extract_client, verbose=verbose)
             if ai_match:
                 cache[cache_key] = _match_to_dict(ai_match)
                 return ai_match
@@ -566,7 +575,7 @@ def lookup_book(book: Book, cache: dict, cfg: Config, openai_client=None) -> Opt
         return None
 
     # Fetch full metadata for top candidates
-    max_cand = max_candidates if openai_client else 3
+    max_cand = max_candidates if extract_client else 3
     candidates = []
     for product in products[:max_cand]:
         product_asin = product.get("asin")
@@ -603,8 +612,8 @@ def lookup_book(book: Book, cache: dict, cfg: Config, openai_client=None) -> Opt
             candidates.append(match)
 
     if not candidates:
-        if openai_client:
-            ai_match = _ai_identify_book(book, openai_client, model=model, verbose=verbose)
+        if extract_client:
+            ai_match = _ai_identify_book(book, extract_client, verbose=verbose)
             if ai_match:
                 cache[cache_key] = _match_to_dict(ai_match)
                 return ai_match
@@ -612,10 +621,10 @@ def lookup_book(book: Book, cache: dict, cfg: Config, openai_client=None) -> Opt
         return None
 
     # AI-assisted selection
-    if openai_client:
+    if extract_client:
         picked_asin = _ai_pick_best_match(
-            book, candidates, openai_client,
-            model=model, max_candidates=max_candidates, verbose=verbose,
+            book, candidates, extract_client,
+            max_candidates=max_candidates, verbose=verbose,
         )
         if picked_asin:
             best = next((c for c in candidates if c.asin and c.asin.upper() == picked_asin), None)
@@ -656,7 +665,7 @@ def lookup_book(book: Book, cache: dict, cfg: Config, openai_client=None) -> Opt
 # Phase runner
 # ---------------------------------------------------------------------------
 
-def run_identification(books: list, cfg: Config, openai_client=None):
+def run_identification(books: list, cfg: Config, extract_client=None):
     """Phase 3: Look up each book on Audible and attach the best match."""
     from quackaloger.ui import ui
 
@@ -665,7 +674,7 @@ def run_identification(books: list, cfg: Config, openai_client=None):
         return
 
     verbose = cfg.verbosity in ("verbose", "debug")
-    ai_label = " + AI matching" if openai_client else " (fuzzy matching)"
+    ai_label = " + AI matching" if extract_client else " (fuzzy matching)"
     ui.phase(3, f"Audible lookup for {len(books)} books{ai_label}")
 
     cache = load_cache(cfg.tool_dir)
@@ -682,7 +691,7 @@ def run_identification(books: list, cfg: Config, openai_client=None):
                 ui.verbose(f"[{i}/{len(books)}] Looking up: {book.source_dir}")
 
             try:
-                match = lookup_book(book, cache, cfg, openai_client=openai_client)
+                match = lookup_book(book, cache, cfg, extract_client=extract_client)
                 if match:
                     book.audible_match = match
                     book.asin = match.asin

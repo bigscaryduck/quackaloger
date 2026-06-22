@@ -16,7 +16,7 @@ if sys.stdout.encoding and sys.stdout.encoding.lower() not in ("utf-8", "utf8"):
 def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="quackaloger",
-        description="Organize audiobook libraries for Audiobookshelf",
+        description="Organize audiobooks, Plex movies/TV, and more (modular domains)",
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     parser.add_argument("--version", action="version", version=f"%(prog)s {__version__}")
@@ -49,6 +49,27 @@ def _build_parser() -> argparse.ArgumentParser:
                      help="Skip all Audible API calls")
     org.add_argument("--force", action="store_true",
                      help="Re-process files that already have markers")
+    org.add_argument(
+        "--domain",
+        action="append",
+        dest="domains",
+        default=None,
+        help="Organizer domain to run (repeatable). Default: config organize_domains, usually audiobooks.",
+    )
+    org.add_argument(
+        "--llm-provider",
+        choices=["openai", "anthropic"],
+        default=None,
+        help="Override LLM provider for this run",
+    )
+    org.add_argument(
+        "--anthropic-key",
+        default=None,
+        help="Anthropic API key (or set ANTHROPIC_API_KEY / QUACK_ANTHROPIC_API_KEY)",
+    )
+
+    # --- wizard ---
+    subs.add_parser("wizard", help="Interactive setup for user config, domains, and API keys")
 
     # --- undo ---
     undo = subs.add_parser("undo", help="Undo a previous run")
@@ -103,13 +124,7 @@ def _check_first_run(library_root: str, config_path_override: str = None) -> str
 
 def _cmd_organize(args, parser):
     from quackaloger.config import load_config, create_default_config
-    from quackaloger.discovery import scan_library, group_files_into_books
-    from quackaloger.identification import run_identification
-    from quackaloger.resolver import resolve_book_metadata
-    from quackaloger.pathing import generate_target_path
-    from quackaloger.reporting import build_plan, write_reports
-    from quackaloger.fileops import execute_plan
-    from quackaloger.history import start_run, finish_run
+    from quackaloger.runner import build_extract_client_for_cfg, organize_library_flow
 
     # Determine library root
     library_root = getattr(args, "library_path", None) or getattr(args, "library", None) or os.getcwd()
@@ -139,6 +154,9 @@ def _cmd_organize(args, parser):
         "debug": getattr(args, "debug", False),
         "confidence": getattr(args, "confidence", None),
         "openai_key": getattr(args, "openai_key", None),
+        "anthropic_key": getattr(args, "anthropic_key", None),
+        "llm_provider": getattr(args, "llm_provider", None),
+        "domains": getattr(args, "domains", None),
         "no_ai": getattr(args, "no_ai", False),
         "no_audible": getattr(args, "no_audible", False),
         "force": getattr(args, "force", False),
@@ -164,15 +182,7 @@ def _cmd_organize(args, parser):
                 ui.warn("Aborted.")
                 return
 
-    # Initialize OpenAI client
-    openai_client = None
-    if cfg.openai_api_key and cfg.enable_ai and not cfg.no_ai:
-        try:
-            from openai import OpenAI
-            openai_client = OpenAI(api_key=cfg.openai_api_key)
-        except ImportError:
-            ui.warn("openai package not installed. pip install openai")
-            ui.muted("Falling back to fuzzy matching.")
+    extract_client = build_extract_client_for_cfg(cfg)
 
     ui.init(verbose=verbose)
     ui.banner(version=__version__)
@@ -180,126 +190,26 @@ def _cmd_organize(args, parser):
     mode = "EXECUTE" if not cfg.dry_run else "DRY RUN"
     ui.info(f"Mode: {mode}")
     ui.info(f"Library: {cfg.library_root}")
+    ui.info(f"Domains: {', '.join(cfg.organize_domains)}")
     if cfg.no_audible:
-        ui.warn("Audible lookups: DISABLED")
-    if openai_client:
-        ui.info(f"AI matching: ENABLED ({cfg.openai_model})")
-    elif not cfg.no_ai and not cfg.openai_api_key:
-        ui.muted("AI matching: DISABLED (no API key; use --openai-key or set OPENAI_API_KEY)")
+        ui.warn("Audible lookups: DISABLED (audiobooks domain only)")
+    if extract_client:
+        ui.info(f"AI extraction: ENABLED (provider={cfg.llm_provider})")
+    elif not cfg.no_ai and cfg.enable_ai:
+        ui.muted(
+            "AI extraction: DISABLED (set keys for your llm_provider — "
+            "OPENAI_API_KEY and/or ANTHROPIC_API_KEY / QUACK_* env vars)"
+        )
     ui._console.print()
 
-    # Phase 1: Scan
-    folders = scan_library(
-        cfg.library_root,
-        audio_extensions=cfg.audio_extensions,
-        image_extensions=cfg.image_extensions,
-        ignore_folders=cfg.ignore_folders,
-        follow_symlinks=cfg.follow_symlinks,
-        force=cfg.force,
-        verbose=verbose,
-    )
-
-    # Phase 2: Group
-    books = group_files_into_books(folders, verbose=verbose)
-
-    if not books:
-        ui.info("No audiobooks found. Nothing to do.")
-        ui.flavor("empty_library")
-        return
-
-    # Phase 3: Identification
-    if not cfg.no_audible:
-        run_identification(books, cfg, openai_client=openai_client)
-    else:
-        ui.info("Skipping Audible lookups (--no-audible)")
-
-    # Phase 4: Resolve metadata
-    ui.phase(4, f"Resolving metadata for {len(books)} books")
-    with ui.progress(len(books), desc="Resolving metadata") as progress:
-        task = progress.add_task("Resolving metadata", total=len(books))
-        for book in books:
-            resolve_book_metadata(
-                book, folders,
-                confidence_threshold=cfg.confidence_threshold,
-                verbose=verbose,
-            )
-            progress.advance(task)
-
-    # Phase 5: Generate target paths
-    ui.phase(5, "Generating target paths")
-    with ui.progress(len(books), desc="Generating paths") as progress:
-        task = progress.add_task("Generating paths", total=len(books))
-        for book in books:
-            generate_target_path(
-                book, cfg.library_root,
-                series_pattern=cfg.series_pattern,
-                standalone_pattern=cfg.standalone_pattern,
-                verbose=verbose,
-            )
-            progress.advance(task)
-
-    # Phase 6: Build plan and reports
-    ui.phase(6, "Building move plan")
-    with ui.spinner("Building plan..."):
-        report = build_plan(
-            books, folders, cfg.library_root,
-            unidentified_action=cfg.unidentified_action,
-            confidence_threshold=cfg.confidence_threshold,
-            verbose=verbose,
-        )
-
-    # Start a run record
-    config_snapshot = {
-        "confidence_threshold": cfg.confidence_threshold,
-        "dry_run": cfg.dry_run,
-        "no_audible": cfg.no_audible,
-        "no_ai": cfg.no_ai,
-    }
-    run = start_run(cfg.tool_dir, cfg.library_root, config_snapshot)
-
-    # Render the report to terminal (styled)
-    ui.rule("Results")
-    if verbose:
-        ui.report_verbose(report, books, cfg.library_root)
-    else:
-        ui.report_summary(report, cfg.library_root)
-
-    # Write both plain-text reports to disk
-    summary_path, verbose_path = write_reports(
-        report, books, cfg.library_root, cfg.tool_dir, run.run_id,
-    )
-    ui.info("Reports saved:")
-    ui.muted(f"  Summary: {summary_path}")
-    ui.muted(f"  Verbose: {verbose_path}")
-
-    # Phase 7: Execute (only if not dry-run)
-    if not cfg.dry_run:
-        if not report.moves and not report.quarantine:
-            ui.info("No moves to execute.")
-            ui.flavor("all_correct")
-            finish_run(cfg.tool_dir, run, status="completed",
-                       summary={"books_processed": len(books), "files_moved": 0})
-            return
-
-        total_ops = len(report.moves) + len(report.quarantine)
-        ui.info(f"About to process {total_ops} file operations.")
-        if not ui.prompt_confirm("Continue?", default=False):
-            ui.warn("Aborted.")
-            finish_run(cfg.tool_dir, run, status="aborted")
-            return
-
-        ui.phase(7, "Executing file operations")
-        summary = execute_plan(report, cfg, run, verbose=verbose)
-        summary["books_processed"] = len(books)
-        finish_run(cfg.tool_dir, run, status="completed", summary=summary)
-        ui.success("Done! Rescan your library in Audiobookshelf to pick up the changes.")
-    else:
-        finish_run(cfg.tool_dir, run, status="dry_run",
-                   summary={"books_processed": len(books),
-                            "files_would_move": len(report.moves),
-                            "books_quarantined": len(report.quarantine)})
-        ui.info("This was a dry run. No files were moved.")
-        ui.flavor("dry_run_done")
+    try:
+        organize_library_flow(cfg, extract_client=extract_client, verbose=verbose)
+    except KeyError as e:
+        ui.error_panel("Unknown domain", str(e))
+        sys.exit(2)
+    except ValueError as e:
+        ui.error_panel("Configuration error", str(e))
+        sys.exit(2)
 
 
 # ---------------------------------------------------------------------------
@@ -366,6 +276,7 @@ def _cmd_status(args, parser):
     ui.banner(version=__version__)
     ui.info(f"Library: {cfg.library_root}")
     ui.info(f"Tool dir: {cfg.tool_dir}")
+    ui.info(f"Organize domains: {', '.join(cfg.organize_domains)}")
     ui._console.print()
 
     # Quick scan
@@ -412,7 +323,7 @@ def _cmd_init(args, parser):
 
     # Ensure all subdirectories exist
     subdirs = {
-        "cache":        "Cached Audible/Audnexus API results (avoids redundant lookups)",
+        "cache":        "Cached API results (Audible, Audnexus, TMDB, etc.)",
         "history":      "Run journals -- every file move is recorded here for undo support",
         "logs":         "Summary and verbose reports from each run",
         "trash":        "Soft-deleted files (sidecars, metadata.json) -- never permanently deleted",
@@ -498,6 +409,10 @@ def _cmd_init(args, parser):
 # ---------------------------------------------------------------------------
 
 def main():
+    from quackaloger.env_warnings import emit_legacy_env_warnings
+
+    emit_legacy_env_warnings(ui)
+
     parser = _build_parser()
     args = parser.parse_args()
 
@@ -512,5 +427,9 @@ def main():
         _cmd_status(args, parser)
     elif command == "init":
         _cmd_init(args, parser)
+    elif command == "wizard":
+        from quackaloger.wizard import run_wizard
+
+        run_wizard()
     else:
         parser.print_help()

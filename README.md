@@ -1,25 +1,37 @@
-# Audiobook Quackaloger
+# Quackaloger
 
 ```
                                                     _~_
-  Audiobook                                       >(O  )___
+  Media library                                   >(O  )___
    ____                   __          __           ( ._>  /
   / __ \__  ______ ______/ /______ _ / /___  ____   `---'
  / / / / / / / __ `/ ___/ //_/ __ `// / __ \/ __ `/ _ \/ ___/
 / /_/ / /_/ / /_/ / /__/ ,< / /_/ // / /_/ / /_/ /  __/ /
 \___\_\__,_/\__,_/\___/_/|_|\__,_//_/\____/\__, /\___/_/
                                            /____/
-  Putting your ducks (and your audiobooks) in a row.   v1.0.0
+  Putting your ducks (and your media files) in a row.   v1.0.0
                                                by BigScaryDuck
 ```
 
-A portable Python tool that scans an audiobook library, reads ID3/M4B tags, looks up metadata on Audible (with optional AI-assisted matching), and reorganizes everything into the folder structure that [Audiobookshelf](https://www.audiobookshelf.org/) expects.
+A portable Python tool for organizing media libraries in a **modular** way. You pick **domains** (what you are organizing): **audiobooks** for [Audiobookshelf](https://www.audiobookshelf.org/), **Plex movies** and **Plex TV** (TMDB-backed naming with `{tmdb-…}` hints), plus **comic/manga and ebook** domains reserved for future work. It scans files, looks up metadata from the right services, optionally uses **structured LLM extraction** (OpenAI or Anthropic) to disambiguate matches, and produces a move plan.
 
 **Always runs in dry-run mode unless `--execute` is explicitly passed.** Nothing is moved until you review the report and confirm.
 
 > *"The Quackaloger is, statistically speaking, mostly harmless."*
 
-## The Problem
+## Domains
+
+| Domain ID         | What it does |
+| ----------------- | ------------ |
+| `audiobooks`      | ID3 tags, Audible + Audnexus, paths for Audiobookshelf (default). |
+| `plex_movies`     | Video files per movie folder, TMDB movie search, Plex-friendly folder/file names. Requires a **TMDB API key**. |
+| `plex_tv`         | Episodes under `Show/Season xx/`, TMDB TV show + `SxxEyy` naming. Requires a **TMDB API key**. |
+| `comic_archives`  | Backlog (placeholder). |
+| `ebooks`          | Backlog (placeholder). |
+
+Configure which domains run in order with `organize_domains` in `.quackaloger/config.yaml`, or pass `--domain` on the CLI (see below). Use **`quackaloger wizard`** for a guided setup of domains, paths, and API keys (writes your **user** config).
+
+## The Problem (audiobooks)
 
 Audiobookshelf groups books **by folder** -- every audio file in the same folder is treated as one book. Common issues this tool fixes:
 
@@ -51,7 +63,7 @@ Author Name/
 Requires Python 3.10+.
 
 ```bash
-cd .quackaloger
+cd quackaloger   # repository root containing pyproject.toml
 pip install .
 ```
 
@@ -92,7 +104,8 @@ This works from any directory without PATH changes.
 | [mutagen](https://mutagen.readthedocs.io/)         | Yes      | Audio metadata reading and writing                                          |
 | [requests](https://docs.python-requests.org/)      | Yes      | Audible/Audnexus API lookups                                                |
 | [PyYAML](https://pyyaml.org/)                      | Yes      | Configuration file parsing                                                  |
-| [openai](https://github.com/openai/openai-python)  | Yes      | AI-assisted matching via GPT-4o-mini (inactive until API key is configured) |
+| [openai](https://github.com/openai/openai-python)  | Yes      | LLM **structured extraction** (tool calls) for disambiguation when configured |
+| [anthropic](https://github.com/anthropics/anthropic-sdk-python) | Yes | Claude (same extraction path; optional key)                                |
 | [rich](https://rich.readthedocs.io/)               | Yes      | Styled terminal output, progress bars, tables, panels                       |
 | [questionary](https://questionary.readthedocs.io/) | Yes      | Interactive arrow-key prompts (select, confirm)                             |
 | [pyfiglet](https://github.com/pwaller/pyfiglet)    | Yes      | ASCII art wordmark for the startup banner                                   |
@@ -100,24 +113,40 @@ This works from any directory without PATH changes.
 
 ## Quick Start
 
+**Optional — machine-wide setup (domains, paths, keys):**
+
 ```bash
-# Navigate to your audiobook library
+quackaloger wizard
+```
+
+This writes a **user** config (Windows: `%APPDATA%\quackaloger\config.yaml`; macOS/Linux: `~/.config/quackaloger/config.yaml` or `XDG_CONFIG_HOME`). You can also rely on environment variables and library-only config.
+
+**Per-library workflow (e.g. audiobooks):**
+
+```bash
+# Navigate to your library root
 cd "\Media\Audiobooks"
 
-# 1. Initialize -- generates config.yaml and directory structure (no scanning)
+# 1. Initialize -- generates .quackaloger/config.yaml and directory structure (no scanning)
 python -m quackaloger init
 
-# 2. Edit the config to set your preferences (API keys, confidence, patterns, etc.)
-#    Open .quackaloger/config.yaml in your editor
+# 2. Edit .quackaloger/config.yaml (API keys, organize_domains, patterns, etc.)
 
-# 3. Run a dry-run to preview what would change
+# 3. Dry-run (default) -- preview what would change
 python -m quackaloger organize
 
 # 4. Execute after reviewing the report
 python -m quackaloger organize --execute
 ```
 
-The `init` command creates `.quackaloger/config.yaml` with commented defaults and sets up all subdirectories. Edit the config before your first scan.
+**Plex example (movies only, separate library path):**
+
+```bash
+quackaloger organize "D:\Media\Movies" --domain plex_movies --dry-run
+# set TMDB_API_KEY or QUACK_TMDB_API_KEY, or tmdb_api_key in config
+```
+
+The `init` command creates library-local `.quackaloger/config.yaml` and subdirectories. The **wizard** helps wire domains and keys; library YAML still holds patterns, `dry_run`, and per-library overrides.
 
 ## Usage
 
@@ -148,7 +177,23 @@ quackaloger organize --no-audible
 
 # Force re-process files that already have markers
 quackaloger organize --force --execute
+
+# Choose domains (default: from config `organize_domains`, usually audiobooks)
+quackaloger organize --domain audiobooks
+quackaloger organize --domain plex_movies --domain plex_tv
+
+# LLM provider (OpenAI or Anthropic); keys from env or config
+quackaloger organize --llm-provider anthropic
+quackaloger organize --anthropic-key sk-ant-...
 ```
+
+### Wizard (setup)
+
+```bash
+quackaloger wizard
+```
+
+Interactive checklist for enabled domains, optional root paths, TMDB (if Plex is selected), and OpenAI/Anthropic keys. Writes the **user** config; does not replace library `.quackaloger/config.yaml` except when you add paths for reference.
 
 ### Undo a Previous Run
 
@@ -166,7 +211,7 @@ quackaloger undo --force
 ### Check Status
 
 ```bash
-# Quick scan showing how many books would be processed
+# Quick scan (audiobooks path) and recent runs; shows configured organize_domains
 quackaloger status
 ```
 
@@ -194,17 +239,24 @@ quackaloger init
 ### `organize` Flags
 
 
-| Flag                 | Description                                                                |
-| -------------------- | -------------------------------------------------------------------------- |
-| *(none)*             | Dry run (default). Scans, resolves metadata, prints report. Moves nothing. |
-| `--execute`          | Commit changes after confirmation prompt.                                  |
-| `--dry-run`          | Explicit dry-run (same as default).                                        |
-| `--confidence FLOAT` | Override minimum confidence threshold (0.0-1.0).                           |
-| `--openai-key KEY`   | OpenAI API key. Also supports `OPENAI_API_KEY` env var.                    |
-| `--no-ai`            | Disable AI matching even if a key is available.                            |
-| `--no-audible`       | Skip all Audible API calls. Uses only local metadata.                      |
-| `--force`            | Re-process files that already have processing markers.                     |
+| Flag                   | Description |
+| ---------------------- | ----------- |
+| *(none)*               | Dry run (default). Resolves metadata, prints report. Moves nothing. |
+| `--execute`            | Commit changes after confirmation prompt. |
+| `--dry-run`            | Explicit dry-run (same as default). |
+| `--domain DOMAIN`      | Run a domain (repeatable). Overrides `organize_domains` for this run. |
+| `--llm-provider`       | `openai` or `anthropic` (overrides config for this run). |
+| `--anthropic-key KEY`  | Anthropic API key; also `ANTHROPIC_API_KEY` / `QUACK_ANTHROPIC_API_KEY`. |
+| `--confidence FLOAT`   | Override global confidence (0.0-1.0). Per-domain thresholds in YAML override via `domain_thresholds`. |
+| `--openai-key KEY`     | OpenAI API key. Also `OPENAI_API_KEY` / `QUACK_OPENAI_API_KEY`. |
+| `--no-ai`              | Disable LLM extraction even if keys are available. |
+| `--no-audible`         | **Audiobooks domain only:** skip Audible/Audnexus. |
+| `--force`              | Re-process files that already have processing markers. |
 
+
+### `wizard`
+
+No extra flags. Runs the interactive setup and writes the user `config.yaml`.
 
 ### `undo` Flags
 
@@ -217,82 +269,80 @@ quackaloger init
 
 ## Configuration
 
-On first run, the Quackaloger generates `.quackaloger/config.yaml` with commented defaults. Edit any value -- CLI flags override the config file for one-off runs.
+There are two layers:
+
+1. **User (machine) config** — `wizard` creates/updates it. Holds defaults such as `organize_domains`, optional paths, and API key fields you choose to store (prefer env for secrets in shared or automated environments).
+2. **Library config** — `<library>/.quackaloger/config.yaml` — patterns, per-library `dry_run`, `domain_thresholds`, Audible/Plex options, and trash/review paths.
+
+The library file is still auto-created on first use of a library; `init` creates it immediately.
 
 ### Precedence Order
 
 ```
-CLI flags > Environment variables > config.yaml > Built-in defaults
+CLI flags > Environment variables > library .quackaloger/config.yaml > user config > built-in defaults
 ```
 
-### Key Options
+### Key options (library `config.yaml`)
+
+| Option | Default / notes | Description |
+| ------ | --------------- | ----------- |
+| `organize_domains` | `[audiobooks]` | List of domain IDs to run in order for `quackaloger organize`. |
+| `domain_thresholds` | `{}` | Per-domain confidence overrides (e.g. `plex_movies: 0.82`). |
+| `identification.confidence_threshold` | `0.75` | Default for audiobooks when not overridden. |
+| `identification.llm_provider` | `openai` | `openai` or `anthropic`. |
+| `identification.openai_api_key` / `openai_model` | (see `llm_models` in code) | OpenAI; model ID defaults live in `quackaloger/llm_models.py`. |
+| `identification.anthropic_api_key` / `anthropic_model` | | Anthropic (Claude). |
+| `identification.tmdb_api_key` | `""` | **Required** for `plex_movies` / `plex_tv` (or set env, see below). |
+| `identification.enable_ai` | `true` | Disable structured LLM steps when `false` or with `--no-ai`. |
+| `plex.*` | (patterns with `{tmdb_hint}`) | Movie/TV folder and file naming; `{tmdb_hint}` expands to e.g. `{tmdb-123}`. |
+| `discovery.*` | | Audiobook scan: extensions, ignore folders, etc. |
+| `organization.*` | | **Audiobooks** series/standalone path patterns. |
+| `file_operations.dry_run` | `true` | Default mode. |
+| `file_operations.embed_markers` | `true` | **Audio** markers after successful moves (not applied to video). |
+| `logging.verbosity` | `summary` | `summary`, `verbose`, or `debug`. |
 
 
-| Option                                | Default                                                      | Description                                                 |
-| ------------------------------------- | ------------------------------------------------------------ | ----------------------------------------------------------- |
-| `identification.confidence_threshold` | `0.75`                                                       | Minimum confidence to accept an Audible match               |
-| `identification.openai_api_key`       | `""`                                                         | API key for GPT-4o-mini (or use `OPENAI_API_KEY` env var)   |
-| `identification.enable_ai`            | `true`                                                       | Enable/disable AI matching                                  |
-| `discovery.audio_extensions`          | mp3, m4b, m4a, flac, ogg, wma, aac, opus                     | File types to scan                                          |
-| `discovery.ignore_folders`            | `[]`                                                         | Folder names to skip during scanning                        |
-| `organization.series_pattern`         | `{author}/{series}/Book {sequence} - {title} {{{narrator}}}` | Naming pattern for series books                             |
-| `organization.standalone_pattern`     | `{author}/{title} {{{narrator}}}`                            | Naming pattern for standalone books                         |
-| `organization.unidentified_action`    | `quarantine`                                                 | What to do with unidentified books (`quarantine` or `skip`) |
-| `file_operations.dry_run`             | `true`                                                       | Default mode                                                |
-| `file_operations.embed_markers`       | `true`                                                       | Embed processing markers in audio files                     |
-| `logging.verbosity`                   | `summary`                                                    | `summary`, `verbose`, or `debug`                            |
+### Environment variables
+
+| Variable | Purpose |
+| -------- | ------- |
+| `OPENAI_API_KEY` | OpenAI API key. |
+| `QUACK_OPENAI_API_KEY` | OpenAI; takes precedence over `ABO_OPENAI_API_KEY` and is checked before `OPENAI_API_KEY`. |
+| `ABO_OPENAI_API_KEY` | **Deprecated** prefix; still read. Prefer `QUACK_OPENAI_API_KEY`. |
+| `ANTHROPIC_API_KEY` | Anthropic API key. |
+| `QUACK_ANTHROPIC_API_KEY` | Anthropic (optional duplicate naming). |
+| `TMDB_API_KEY` / `QUACK_TMDB_API_KEY` | TMDB for Plex movie/TV domains. |
+| `QUACK_AUDIBLE_CATALOG_URL` / `ABO_AUDIBLE_CATALOG_URL` | Override Audible catalog URL. |
+| `QUACK_AUDNEXUS_URL` / `ABO_AUDNEXUS_URL` | Override Audnexus base URL. |
+
+If both `QUACK_*` and `ABO_*` exist for the same setting, the newer `QUACK_*` name wins. Startup may warn if legacy `ABO_*` is set without the matching `QUACK_*`.
 
 
-### Environment Variables
+## How it works
 
+`quackaloger organize` runs each **domain** in `organize_domains` (or those passed with `--domain`) in order. Each domain scans its relevant files, resolves metadata, builds a **move plan** (same report shape for dry-run and execute), and the runner **merges** all plans. One **run id** covers the whole command—**undo** reverses that run in one step (moves, trash, and audio markers from all domains in that run).
 
-| Variable                    | Maps to                              |
-| --------------------------- | ------------------------------------ |
-| `OPENAI_API_KEY`            | `identification.openai_api_key`      |
-| `QUACK_OPENAI_API_KEY`      | `identification.openai_api_key`      |
-| `QUACK_AUDIBLE_CATALOG_URL` | `identification.audible_catalog_url` |
-| `QUACK_AUDNEXUS_URL`        | `identification.audnexus_url`        |
+### Audiobooks domain (Audiobookshelf)
 
+1. **Scan** — Recursively walk the library; read ID3/MP4 tags with mutagen; collect path/filename hints. Files with a valid processing marker are skipped unless `--force`.
+2. **Group** — Split multi-book folders into logical books (album, filename, series tags).
+3. **Identify** — **Audible Catalog API** (no auth) + **Audnexus** by ASIN or search. Optional **LLM** uses **structured tool extraction** (not free-form text) to pick the best ASIN or fill fields from local metadata. **Without a key:** fuzzy matching. Caches to `.quackaloger/cache/audible.json` (rate-limited by default).
+4. **Resolve** — Priority: Audible/Audnexus > ID3 > filename > path > `metadata.json`.
+5. **Pathing** — Apply `series_pattern` / `standalone_pattern`; sanitize paths.
+6. **Plan & report** — Summary + verbose logs under `.quackaloger/logs/`.
+7. **Execute** (if `--execute`) — Move files, soft-delete stale sidecars, quarantine low-confidence items, **embed markers in audio only**, clean empty dirs; journal every action.
 
-## How It Works
+### Plex movie domain
 
-### Phase 1: Scan
+Scans video files per **folder** (skips `Season xx` trees). **TMDB** search + detail; optional LLM pick among candidates; targets folder names like `Title (Year) {tmdb-…}`. Cache: `.quackaloger/cache/tmdb.json`.
 
-Walks the library recursively. For every audio file, reads ID3/MP4 tags via mutagen and parses the filename and folder path for metadata hints. On incremental runs, files with a valid processing marker are skipped unless `--force` is used.
+### Plex TV domain
 
-### Phase 2: Group into Books
+Finds episodes under `…/Show/Season N/…`, resolves the **show** once via TMDB, then names episodes with `SxxEyy` and the same `{tmdb-…}` show hint. Cache: `tmdb.json`.
 
-Splits multi-book folders into separate logical books when files differ by album tag, book/volume number in filename, or series-part tag.
+## How undo works
 
-### Phase 3: Audible Lookup + AI Matching
-
-For each book, searches the **Audible Catalog API** (public, no auth needed) and enriches results via the **Audnexus API**.
-
-- If an ASIN is found in ID3 tags, goes straight to Audnexus (skips search)
-- **With AI (recommended):** sends local metadata + top 5 Audible candidates to GPT-4o-mini, which picks the correct English-language match. Costs ~$0.01-0.05 per full library.
-- **Without AI:** fuzzy string matching with confidence threshold
-- If all API lookups fail, AI identifies the book from local metadata alone
-- Rate-limited to 1 request/second; results cached to `.quackaloger/cache/audible.json`
-
-### Phase 4: Resolve Metadata
-
-Priority stack: Audible/Audnexus > ID3 tags > filename parsing > folder path > metadata.json.
-
-### Phase 5: Generate Target Paths
-
-Computes the target folder using configurable naming patterns. Sanitizes folder names for filesystem compatibility.
-
-### Phase 6: Build Plan & Report
-
-Produces a summary report (failures only) and a verbose report (every decision). Both are saved to `.quackaloger/logs/`.
-
-### Phase 7: Execute
-
-Only runs with `--execute`. Moves files, trashes sidecars (soft delete), quarantines unidentified books, embeds processing markers, and cleans up empty directories. Every operation is journaled for undo support.
-
-## How Undo Works
-
-Every run is assigned a unique ID (e.g., `20260415-163200-a1b2c3`) and every file operation is journaled to `.quackaloger/history/<run-id>.json`.
+Every `organize` run gets one ID (e.g. `20260415-163200-a1b2c3`). All merged domain operations are recorded in **one** journal: `.quackaloger/history/<run-id>.json`.
 
 Running `quackaloger undo` presents an interactive arrow-key menu of all previous runs. Select one and all its operations are reversed in LIFO order:
 
@@ -301,25 +351,27 @@ Running `quackaloger undo` presents an interactive arrow-key menu of all previou
 - **Embedded markers** are removed from audio files
 - **Conflict handling**: if a file was moved again by a later run, the undo warns you and suggests undoing the later run first (or use `--force` to skip conflicting actions)
 
-## The `.quackaloger/` Directory
+## The `.quackaloger/` directory (per library root)
 
-Everything the Quackaloger generates lives in this directory at your library root:
+At each **library** path you pass to `organize` / `init`, the tool keeps state here:
 
 ```
-audiobook-quackaloger/
-  quackaloger/            # Python package (the tool itself)
-  config.yaml             # User-editable configuration
-  cache/
-    audible.json          # Cached Audible/Audnexus API results
-  history/
-    <run-id>.json         # Journal of every action per run (for undo)
-  logs/
-    <run-id>_summary.txt  # High-level report (failures only)
-    <run-id>_verbose.txt  # Full detailed log of every decision
-  trash/                  # Soft-deleted sidecar files (metadata.json, .nfo, etc.)
-  needs-review/           # Quarantined unidentified/low-confidence books
-  pyproject.toml          # Package metadata and dependencies
+<YourLibrary>/
+  .quackaloger/
+    config.yaml           # Library config (patterns, domains, keys you store here)
+    cache/
+      audible.json        # Cached Audible / Audnexus
+      tmdb.json           # Cached TMDB (Plex movie/TV domains)
+    history/
+      <run-id>.json       # One journal per organize run (undo)
+    logs/
+      <run-id>_summary.txt
+      <run-id>_verbose.txt
+    trash/                # Soft-deleted sidecars
+    needs-review/         # Quarantined items
 ```
+
+**User** (machine) config is separate: `%APPDATA%\quackaloger\config.yaml` on Windows, or `~/.config/quackaloger/config.yaml` (see `XDG_CONFIG_HOME`) on Unix—created by **`quackaloger wizard`**.
 
 ### Incremental Runs
 
@@ -338,21 +390,29 @@ The Quackaloger never permanently deletes files. Stale sidecar files (metadata.j
 
 ## Troubleshooting
 
-**"No audiobooks found"** -- make sure you're pointing at the correct library root and that your audio files have recognized extensions (.mp3, .m4b, .m4a, .flac, .ogg, .wma, .aac, .opus).
+**"No audiobooks found"** (audiobooks domain) — Point `--library` at the folder that actually contains your books; use recognized audio extensions (see below).
 
-**Network path issues** -- UNC paths like `\\SERVER\Share\Audiobooks` work fine on Windows. If you see permission errors, ensure the Python process has read/write access to the share.
+**Plex domain errors (TMDB)** — `plex_movies` / `plex_tv` need a **TMDB API key** (`identification.tmdb_api_key`, user config `api_keys.tmdb`, or `QUACK_TMDB_API_KEY` / `TMDB_API_KEY` env). Get a key at [themoviedb.org](https://www.themoviedb.org/settings/api).
 
-**"Audible unmatched" for many books** -- enable AI matching with `--openai-key` for much better accuracy. Without AI, fuzzy string matching may miss books with unusual naming.
+**"No movie video files"** — Movie domain skips paths under `Season N` folders (reserved for TV). Put one movie per folder for best results.
 
-**A book was quarantined but I know what it is** -- move it out of `needs-review/` back into the library with a proper `Author/Title/` structure and re-run.
+**"No TV episode files"** — Use `Show Name/Season 01/…` (or `Season 1`, etc.) and common video extensions.
 
-**API rate limits** -- the Quackaloger sleeps 1 second between Audible API calls by default. Adjust `identification.audible_request_delay_seconds` in config.yaml if needed.
+**Network path issues** — UNC paths like `\\SERVER\Share\Media` work on Windows if the process has read/write access.
 
-**Undo says "file moved by later run"** -- undo runs in reverse chronological order. Undo the most recent run first, or use `--force` to skip conflicting actions.
+**Catalog / Audible unmatched (audiobooks)** — Configure OpenAI or Anthropic keys and `identification.enable_ai: true` for structured picks; without LLM, fuzzy matching is weaker on messy names.
 
-## Supported Audio Formats
+**Quarantined item** — Move it out of `needs-review/`, fix naming or metadata, re-run.
 
-`.mp3`, `.m4b`, `.m4a`, `.flac`, `.ogg`, `.wma`, `.aac`, `.opus`
+**API rate limits (Audible)** — Default delay is in `identification.audible_request_delay_seconds`.
+
+**Undo: "file moved by later run"** — Undo the latest run first, or use `undo --force`.
+
+## Supported formats
+
+**Audio (audiobooks):** `.mp3`, `.m4b`, `.m4a`, `.flac`, `.ogg`, `.wma`, `.aac`, `.opus`
+
+**Video (Plex domains):** e.g. `.mkv`, `.mp4`, `.m4v`, `.avi`, `.mov`, `.webm` (see `VIDEO_EXTENSIONS` in the code for the full set)
 
 ## License
 
@@ -362,7 +422,7 @@ MIT. Do what you like, just don't sue the duck.
 
 Built by **BigScaryDuck** [bigscaryduck.com](https://bigscaryduck.com)
 
-The Audiobook Quackaloger exists because Audiobookshelf kept grouping four-book omnibuses into a single phantom audiobook and it was, to put it kindly, upsetting.
+Quackaloger started with Audiobookshelf (four-book “omnibuses” in one folder) and grew to support Plex-style libraries and a shared, modular pipeline.
 
 ---
 

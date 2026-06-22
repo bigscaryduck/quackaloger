@@ -12,6 +12,7 @@ dependencies = [
     "requests",
     "PyYAML",
     "openai",
+    "anthropic>=0.40.0",
     "rich",
     "questionary",
     "pyfiglet",

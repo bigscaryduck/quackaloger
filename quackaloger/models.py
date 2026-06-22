@@ -27,6 +27,7 @@ class AudioFileMeta:
     path_series_hint: Optional[str] = None
     path_title_hint: Optional[str] = None
     raw_tags: dict = field(default_factory=dict)
+    target_filename: Optional[str] = None
 
 
 @dataclass
@@ -43,6 +44,20 @@ class AudibleMatch:
     description: Optional[str] = None
     genres: list = field(default_factory=list)
     duration_min: int = 0
+    confidence: float = 0.0
+
+
+@dataclass
+class PlexMatch:
+    """TMDB-based match for Plex movie or TV episode."""
+    tmdb_id: int
+    title: str
+    media_type: str = "movie"  # movie | tv
+    year: Optional[int] = None
+    show_title: Optional[str] = None
+    season: Optional[int] = None
+    episode: Optional[int] = None
+    episode_title: Optional[str] = None
     confidence: float = 0.0
 
 
@@ -66,6 +81,8 @@ class Book:
     conflicts: list = field(default_factory=list)
     resolution_log: list = field(default_factory=list)
     ambiguous: bool = False
+    plex_match: Optional[PlexMatch] = None
+    domain_tag: str = ""  # which organizer domain produced this row (verbose reports)
 
 
 @dataclass
@@ -112,3 +129,5 @@ class PlanReport:
     stale_metadata: list = field(default_factory=list)   # list[str] (paths)
     quarantine: list = field(default_factory=list)        # list[Book]
     audible_stats: dict = field(default_factory=dict)
+    # Optional domain tag for logs / merged runs (e.g. audiobooks, plex_movies)
+    domain_id: str = ""

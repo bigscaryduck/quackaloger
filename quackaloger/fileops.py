@@ -9,7 +9,7 @@ from datetime import datetime, timezone
 
 from quackaloger import metadata as meta_mod
 from quackaloger.config import Config
-from quackaloger.constants import AUDIO_EXTENSIONS
+from quackaloger.constants import AUDIO_EXTENSIONS, VIDEO_EXTENSIONS
 from quackaloger.history import record_action
 from quackaloger.models import ActionRecord, MoveAction, PlanReport, RunRecord
 from quackaloger.ui import ui
@@ -153,10 +153,9 @@ def execute_plan(
         remaining = os.listdir(src_dir)
         if not remaining:
             continue
-        has_audio = any(
-            os.path.splitext(f)[1].lower() in AUDIO_EXTENSIONS for f in remaining
-        )
-        if has_audio:
+        media_exts = AUDIO_EXTENSIONS | VIDEO_EXTENSIONS
+        has_media = any(os.path.splitext(f)[1].lower() in media_exts for f in remaining)
+        if has_media:
             continue
 
         for fname in remaining:
@@ -221,7 +220,7 @@ def execute_plan(
     if cfg.embed_markers:
         processed_files = [
             action.dest for action in report.moves
-            if action.file_type == "audio" and os.path.exists(action.dest)
+            if action.file_type in ("audio",) and os.path.exists(action.dest)
         ]
 
         if processed_files:

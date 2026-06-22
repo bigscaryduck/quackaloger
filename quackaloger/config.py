@@ -19,6 +19,7 @@ from quackaloger.constants import (
     IMAGE_EXTENSIONS,
     TOOL_DIR_NAME,
 )
+from quackaloger import llm_models
 
 try:
     import yaml
@@ -30,6 +31,15 @@ except ImportError:
 # Config dataclass
 # ---------------------------------------------------------------------------
 
+DEFAULT_DOMAIN_CONFIDENCE = {
+    "audiobooks": DEFAULT_CONFIDENCE_THRESHOLD,
+    "plex_movies": 0.82,
+    "plex_tv": 0.82,
+    "comic_archives": 0.75,
+    "ebooks": 0.75,
+}
+
+
 @dataclass
 class Config:
     """Frozen configuration for a single run."""
@@ -38,6 +48,17 @@ class Config:
     library_root: str = ""
     tool_dir: str = ""
 
+    # Multi-domain / user-level (optional)
+    organize_domains: list = field(default_factory=lambda: ["audiobooks"])
+    domain_thresholds: dict = field(default_factory=dict)
+    llm_provider: str = "openai"  # openai | anthropic
+    anthropic_api_key: str = ""
+    anthropic_model: str = llm_models.DEFAULT_ANTHROPIC_HAIKU
+    tmdb_api_key: str = ""
+    user_path_audiobooks: str = ""
+    user_path_plex_movies: str = ""
+    user_path_plex_tv: str = ""
+
     # Identification
     confidence_threshold: float = DEFAULT_CONFIDENCE_THRESHOLD
     audible_catalog_url: str = AUDIBLE_CATALOG_URL
@@ -45,8 +66,15 @@ class Config:
     audible_request_delay: float = DEFAULT_AUDIBLE_REQUEST_DELAY
     max_audible_candidates: int = DEFAULT_MAX_AUDIBLE_CANDIDATES
     openai_api_key: str = ""
-    openai_model: str = DEFAULT_GPT_MODEL
+    openai_model: str = llm_models.DEFAULT_OPENAI_SMALL
     enable_ai: bool = True
+    # Plex templates (Movie / TV Series + TMDB agent; include {tmdb-…} for stable matching)
+    plex_movie_folder_pattern: str = "{title} ({year}) {tmdb_hint}"
+    plex_movie_file_pattern: str = "{title} ({year}) {tmdb_hint}{ext}"
+    plex_tv_show_folder_pattern: str = "{show_title} {tmdb_hint}"
+    plex_tv_episode_pattern: str = (
+        "{show_title} - S{season:02d}E{episode:02d} - {episode_title} {tmdb_hint}{ext}"
+    )
 
     # Discovery
     audio_extensions: set = field(default_factory=lambda: set(AUDIO_EXTENSIONS))
@@ -74,6 +102,13 @@ class Config:
     force: bool = False
 
 
+def domain_confidence_threshold(cfg: Config, domain_id: str) -> float:
+    """Effective confidence threshold for a domain (per-domain YAML overrides global)."""
+    if cfg.domain_thresholds and domain_id in cfg.domain_thresholds:
+        return float(cfg.domain_thresholds[domain_id])
+    return float(DEFAULT_DOMAIN_CONFIDENCE.get(domain_id, cfg.confidence_threshold))
+
+
 # ---------------------------------------------------------------------------
 # Default YAML template (written on first run)
 # ---------------------------------------------------------------------------
@@ -95,10 +130,16 @@ identification:
   audible_request_delay_seconds: 1.0
   max_audible_candidates: 5
 
-  # AI matching (GPT-4o-mini). Set key here or use OPENAI_API_KEY env var.
+  # AI matching. Keys can also come from OPENAI_API_KEY / ANTHROPIC_API_KEY / QUACK_* env vars.
+  llm_provider: openai   # openai | anthropic
   openai_api_key: ""
   openai_model: "gpt-4o-mini"
+  anthropic_api_key: ""
+  anthropic_model: ""
   enable_ai: true
+
+  # TMDB (Plex movie/TV domains). Optional here; often set via user config or TMDB_API_KEY.
+  tmdb_api_key: ""
 
 # --- Discovery ---
 discovery:
@@ -156,6 +197,22 @@ file_operations:
 logging:
   # "summary", "verbose", or "debug"
   verbosity: "summary"
+
+# --- Multi-domain (optional) ---
+# organize_domains lists which domains run on `quackaloger organize` (in order).
+organize_domains:
+  - audiobooks
+
+# Per-domain confidence overrides (optional). Keys: audiobooks, plex_movies, plex_tv, comic_archives, ebooks
+domain_thresholds: {}
+
+# --- Plex (Movie / TV Series + TMDB) naming templates ---
+# Use {tmdb-…} style braces in names for deterministic Plex matching (see Plex support docs).
+plex:
+  movie_folder_pattern: "{title} ({year}) {tmdb_hint}"
+  movie_file_pattern: "{title} ({year}) {tmdb_hint}{ext}"
+  tv_show_folder_pattern: "{show_title} {tmdb_hint}"
+  tv_episode_pattern: "{show_title} - S{season:02d}E{episode:02d} - {episode_title} {tmdb_hint}{ext}"
 """
 
 
@@ -209,6 +266,14 @@ def _apply_yaml(cfg: Config, data: dict):
             cfg.openai_model = str(ident["openai_model"])
         if "enable_ai" in ident:
             cfg.enable_ai = bool(ident["enable_ai"])
+        if "llm_provider" in ident and ident["llm_provider"]:
+            cfg.llm_provider = str(ident["llm_provider"]).lower()
+        if "anthropic_api_key" in ident and ident["anthropic_api_key"]:
+            cfg.anthropic_api_key = str(ident["anthropic_api_key"])
+        if "anthropic_model" in ident and ident["anthropic_model"]:
+            cfg.anthropic_model = str(ident["anthropic_model"])
+        if "tmdb_api_key" in ident and ident["tmdb_api_key"]:
+            cfg.tmdb_api_key = str(ident["tmdb_api_key"])
 
     disc = data.get("discovery", {})
     if isinstance(disc, dict):
@@ -246,16 +311,59 @@ def _apply_yaml(cfg: Config, data: dict):
         if "verbosity" in log:
             cfg.verbosity = str(log["verbosity"])
 
+    if isinstance(data.get("organize_domains"), list) and data["organize_domains"]:
+        cfg.organize_domains = [str(x) for x in data["organize_domains"]]
+
+    dt = data.get("domain_thresholds", {})
+    if isinstance(dt, dict) and dt:
+        cfg.domain_thresholds = {str(k): float(v) for k, v in dt.items()}
+
+    plex = data.get("plex", {})
+    if isinstance(plex, dict):
+        if "movie_folder_pattern" in plex:
+            cfg.plex_movie_folder_pattern = str(plex["movie_folder_pattern"])
+        if "movie_file_pattern" in plex:
+            cfg.plex_movie_file_pattern = str(plex["movie_file_pattern"])
+        if "tv_show_folder_pattern" in plex:
+            cfg.plex_tv_show_folder_pattern = str(plex["tv_show_folder_pattern"])
+        if "tv_episode_pattern" in plex:
+            cfg.plex_tv_episode_pattern = str(plex["tv_episode_pattern"])
+
 
 def _apply_env(cfg: Config):
-    """Override config values from environment variables."""
-    key = os.environ.get("ABO_OPENAI_API_KEY") or os.environ.get("OPENAI_API_KEY")
+    """Override config values from environment variables.
+
+    Precedence per variable family: QUACK_* > ABO_* > generic provider keys where applicable.
+    """
+    # OpenAI key
+    key = (
+        os.environ.get("QUACK_OPENAI_API_KEY")
+        or os.environ.get("ABO_OPENAI_API_KEY")
+        or os.environ.get("OPENAI_API_KEY")
+    )
     if key:
         cfg.openai_api_key = key
-    url = os.environ.get("ABO_AUDIBLE_CATALOG_URL")
+
+    # Anthropic key
+    akey = os.environ.get("QUACK_ANTHROPIC_API_KEY") or os.environ.get("ANTHROPIC_API_KEY")
+    if akey:
+        cfg.anthropic_api_key = akey
+
+    # TMDB (Plex)
+    tmdb = os.environ.get("QUACK_TMDB_API_KEY") or os.environ.get("TMDB_API_KEY")
+    if tmdb:
+        cfg.tmdb_api_key = tmdb
+
+    url = (
+        os.environ.get("QUACK_AUDIBLE_CATALOG_URL")
+        or os.environ.get("ABO_AUDIBLE_CATALOG_URL")
+    )
     if url:
         cfg.audible_catalog_url = url
-    url = os.environ.get("ABO_AUDNEXUS_URL")
+    url = (
+        os.environ.get("QUACK_AUDNEXUS_URL")
+        or os.environ.get("ABO_AUDNEXUS_URL")
+    )
     if url:
         cfg.audnexus_url = url
 
@@ -276,6 +384,12 @@ def _apply_cli(cfg: Config, cli_args: Optional[dict]):
         cfg.confidence_threshold = float(cli_args["confidence"])
     if cli_args.get("openai_key"):
         cfg.openai_api_key = str(cli_args["openai_key"])
+    if cli_args.get("anthropic_key"):
+        cfg.anthropic_api_key = str(cli_args["anthropic_key"])
+    if cli_args.get("llm_provider"):
+        cfg.llm_provider = str(cli_args["llm_provider"]).lower()
+    if cli_args.get("domains"):
+        cfg.organize_domains = [str(d) for d in cli_args["domains"] if d]
     if cli_args.get("no_ai"):
         cfg.no_ai = True
     if cli_args.get("no_audible"):
@@ -307,17 +421,24 @@ def load_config(
     config_path: Optional[str] = None,
     cli_args: Optional[dict] = None,
     auto_create: bool = True,
+    skip_user_config: bool = False,
 ) -> Config:
-    """Build the final Config by merging defaults < YAML < env < CLI.
+    """Build the final Config by merging defaults < user YAML < library YAML < env < CLI.
 
     If auto_create is True (default), generates config.yaml when missing.
     If False, loads only built-in defaults + env + CLI when the file is absent.
     """
+    from quackaloger import user_config as user_cfg_mod
+
     cfg = Config()
     cfg.library_root = os.path.abspath(library_root)
     cfg.tool_dir = os.path.join(cfg.library_root, TOOL_DIR_NAME)
 
     os.makedirs(cfg.tool_dir, exist_ok=True)
+
+    if not skip_user_config:
+        user_data = user_cfg_mod.load_user_yaml()
+        user_cfg_mod.apply_user_yaml_to_config(cfg, user_data)
 
     if config_path:
         yaml_path = config_path
@@ -326,14 +447,20 @@ def load_config(
     else:
         yaml_path = os.path.join(cfg.tool_dir, "config.yaml")
 
-    # Layer 1: YAML file (may not exist if auto_create=False)
+    # Library YAML overlays user defaults
     yaml_data = _load_yaml(yaml_path)
     _apply_yaml(cfg, yaml_data)
 
-    # Layer 2: Environment variables
+    # Environment variables
     _apply_env(cfg)
 
-    # Layer 3: CLI flags
+    # CLI flags
     _apply_cli(cfg, cli_args)
+
+    # Normalize models when empty
+    if not cfg.openai_model:
+        cfg.openai_model = llm_models.DEFAULT_OPENAI_SMALL
+    if not cfg.anthropic_model:
+        cfg.anthropic_model = llm_models.DEFAULT_ANTHROPIC_HAIKU
 
     return cfg

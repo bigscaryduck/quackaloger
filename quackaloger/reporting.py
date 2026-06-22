@@ -7,6 +7,7 @@ import os
 from collections import defaultdict
 from datetime import datetime
 
+from quackaloger.constants import VIDEO_EXTENSIONS
 from quackaloger.models import Book, MoveAction, PlanReport
 from quackaloger.ui import ui
 
@@ -69,8 +70,10 @@ def build_plan(
             continue
 
         for f in book.files:
-            dest = os.path.join(book.target_dir, f.filename)
-            report.moves.append(MoveAction(source=f.filepath, dest=dest, file_type="audio"))
+            dest_name = getattr(f, "target_filename", None) or f.filename
+            dest = os.path.join(book.target_dir, dest_name)
+            ftype = "video" if f.extension.lower() in VIDEO_EXTENSIONS else "audio"
+            report.moves.append(MoveAction(source=f.filepath, dest=dest, file_type=ftype))
 
         for img_path in book.cover_files:
             dest = os.path.join(book.target_dir, os.path.basename(img_path))
@@ -109,8 +112,8 @@ def build_summary_report(report: PlanReport, library_root: str) -> str:
     out(f"\n  Quick stats:")
     out(f"    Files to move:        {len(report.moves)}")
     out(f"    Already correct:      {len(report.already_correct)}")
-    out(f"    Audible matched:      {report.audible_stats.get('matched', 0)}")
-    out(f"    Audible unmatched:    {report.audible_stats.get('unmatched', 0)}")
+    out(f"    Catalog matched:      {report.audible_stats.get('matched', 0)}")
+    out(f"    Catalog unmatched:    {report.audible_stats.get('unmatched', 0)}")
     out(f"    Conflicts found:      {len(report.conflicts)}")
     out(f"    Quarantined:          {len(report.quarantine)}")
     out(f"    Duplicate targets:    {len(report.duplicates)}")
@@ -172,8 +175,8 @@ def build_verbose_report(report: PlanReport, books: list, library_root: str) -> 
     out(f"    Total books:          {len(books)}")
     out(f"    Files to move:        {len(report.moves)}")
     out(f"    Already correct:      {len(report.already_correct)}")
-    out(f"    Audible matched:      {report.audible_stats.get('matched', 0)}")
-    out(f"    Audible unmatched:    {report.audible_stats.get('unmatched', 0)}")
+    out(f"    Catalog matched:      {report.audible_stats.get('matched', 0)}")
+    out(f"    Catalog unmatched:    {report.audible_stats.get('unmatched', 0)}")
     out(f"    Conflicts found:      {len(report.conflicts)}")
     out(f"    Quarantined:          {len(report.quarantine)}")
     out(f"    Duplicate targets:    {len(report.duplicates)}")
@@ -187,6 +190,9 @@ def build_verbose_report(report: PlanReport, books: list, library_root: str) -> 
     for book in books:
         rel = os.path.relpath(book.source_dir, library_root)
         out(f"\n  [{book.book_id}] {rel}")
+        dt = getattr(book, "domain_tag", "") or ""
+        if dt:
+            out(f"    Domain: {dt}")
         out(f"    Files: {[f.filename for f in book.files]}")
         if book.audible_match:
             am = book.audible_match

@@ -7,6 +7,7 @@ import re
 # ---------------------------------------------------------------------------
 
 AUDIO_EXTENSIONS = {".mp3", ".m4b", ".m4a", ".flac", ".ogg", ".wma", ".aac", ".opus"}
+VIDEO_EXTENSIONS = {".mkv", ".mp4", ".m4v", ".avi", ".mov", ".wmv", ".webm", ".mpeg", ".mpg"}
 IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".webp", ".gif", ".bmp"}
 SIDECAR_FILES = {"metadata.json", "metadata.abs", "desc.txt", "reader.txt"}
 SIDECAR_EXTENSIONS = {".nfo", ".cue", ".opf"}
@@ -47,7 +48,7 @@ AUDNEXUS_BOOK_URL = "https://api.audnex.us/books"
 DEFAULT_CONFIDENCE_THRESHOLD = 0.75
 DEFAULT_AUDIBLE_REQUEST_DELAY = 1.0
 DEFAULT_MAX_AUDIBLE_CANDIDATES = 5
-DEFAULT_GPT_MODEL = "gpt-4o-mini"
+DEFAULT_GPT_MODEL = "gpt-4o-mini"  # prefer quackaloger.llm_models.DEFAULT_OPENAI_SMALL in new code
 
 TOOL_DIR_NAME = ".quackaloger"
 MARKER_TAG_NAME = "AUDIOBOOK_ORGANIZER"
