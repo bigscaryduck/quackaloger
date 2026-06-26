@@ -14,7 +14,7 @@ from quackaloger.models import Book, PlanReport, PlexMatch
 from quackaloger.plex_discovery import scan_movie_books
 from quackaloger.plex_format import sanitize_path_component
 from quackaloger.reporting import build_plan
-from quackaloger.tmdb import TmdbClient
+from quackaloger.tmdb import TmdbClient, movie_candidate
 from quackaloger.ui import ui
 
 TMDB_MOVIE_PICK_SCHEMA = {
@@ -102,15 +102,15 @@ class PlexMoviesDomain:
                 f"Local folder name: {q}",
                 "",
                 "Candidates (JSON):",
-                json.dumps(
-                    [
-                        {"tmdb_id": r.get("id"), "title": r.get("title"), "release_date": r.get("release_date")}
-                        for r in results[:8]
-                    ],
-                    indent=2,
-                ),
+                json.dumps([movie_candidate(r) for r in results[:8]], indent=2),
                 "",
-                "Return tmdb_id=-1 if none match.",
+                "Disambiguation guidance:",
+                "- Match foreign / anime titles via original_title and "
+                "original_language as well as title (a romanized or English name "
+                "in the folder may match the original_title).",
+                "- If a year appears in the folder, prefer the candidate whose "
+                "release_date matches; popularity breaks otherwise-equal ties.",
+                "Return tmdb_id=-1 only if no candidate plausibly matches.",
             ]
             try:
                 data = extract_client.extract(
@@ -130,8 +130,10 @@ class PlexMoviesDomain:
             best = None
             best_score = 0.0
             for r in results[:5]:
-                title = r.get("title") or ""
-                score = _fuzzy(title, q)
+                score = max(
+                    _fuzzy(r.get("title") or "", q),
+                    _fuzzy(r.get("original_title") or "", q),
+                )
                 rd = r.get("release_date") or ""
                 year = rd.split("-")[0] if rd else ""
                 if year and year in q:

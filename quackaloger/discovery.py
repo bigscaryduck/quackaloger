@@ -46,6 +46,10 @@ def parse_folder_path(filepath: str, library_root: str) -> dict:
     parts = [p for p in rel.replace("\\", "/").split("/") if p and p != "."]
 
     if len(parts) == 0:
+        # Loose file in the library root: fall back to the filename (minus ext)
+        # so identification still has a title hint instead of nothing.
+        stem = os.path.splitext(os.path.basename(filepath))[0].strip()
+        hints["title"] = stem or None
         return hints
     elif len(parts) == 1:
         folder = parts[0]

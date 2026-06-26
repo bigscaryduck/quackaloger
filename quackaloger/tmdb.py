@@ -23,6 +23,45 @@ TTL_MOVIE_DETAIL = 604800
 TTL_TV_DETAIL = 604800
 
 
+def _round_pop(value: Any) -> float:
+    try:
+        return round(float(value or 0.0), 1)
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def tv_candidate(r: dict[str, Any]) -> dict[str, Any]:
+    """Compact, disambiguation-rich view of a TMDB TV search hit for the LLM.
+
+    Beyond name + air date, this surfaces the signals that separate regional
+    editions of the same format (e.g. an AU/NZ/UK version): original_name,
+    origin_country, original_language, plus popularity to break ties.
+    """
+    return {
+        "tmdb_id": r.get("id"),
+        "name": r.get("name"),
+        "original_name": r.get("original_name"),
+        "origin_country": r.get("origin_country"),
+        "original_language": r.get("original_language"),
+        "first_air_date": r.get("first_air_date"),
+        "popularity": _round_pop(r.get("popularity")),
+        "vote_average": r.get("vote_average"),
+    }
+
+
+def movie_candidate(r: dict[str, Any]) -> dict[str, Any]:
+    """Compact, disambiguation-rich view of a TMDB movie search hit for the LLM."""
+    return {
+        "tmdb_id": r.get("id"),
+        "title": r.get("title"),
+        "original_title": r.get("original_title"),
+        "original_language": r.get("original_language"),
+        "release_date": r.get("release_date"),
+        "popularity": _round_pop(r.get("popularity")),
+        "vote_average": r.get("vote_average"),
+    }
+
+
 def _cache_path(tool_dir: str) -> str:
     return os.path.join(tool_dir, "cache", CACHE_FILENAME)
 

@@ -35,6 +35,8 @@ def merge_plan_reports(a: PlanReport, b: PlanReport) -> PlanReport:
     out.stale_metadata.extend(b.stale_metadata)
     out.quarantine.extend(a.quarantine)
     out.quarantine.extend(b.quarantine)
+    out.to_review.extend(a.to_review)
+    out.to_review.extend(b.to_review)
     out.audible_stats = {
         "matched": int(a.audible_stats.get("matched", 0)) + int(b.audible_stats.get("matched", 0)),
         "unmatched": int(a.audible_stats.get("unmatched", 0)) + int(b.audible_stats.get("unmatched", 0)),
@@ -54,12 +56,39 @@ def run_organize_domains(cfg: Config, *, extract_client) -> tuple[PlanReport, li
     all_books: list = []
     domain_ids = list(cfg.organize_domains) or ["audiobooks"]
 
+    # Source files already claimed by an earlier domain. Guards against two
+    # domains matching the same file (e.g. plex_movies vs plex_tv on a video).
+    claimed: set[str] = set()
+
+    def _norm(path: str) -> str:
+        return os.path.normcase(os.path.normpath(path))
+
     for did in domain_ids:
         dom = get_domain(did)
         dom.validate_config(cfg)
         res: OrganizeResult = dom.run(ctx)
-        all_books.extend(res.books)
+
+        kept_books = []
+        for b in res.books:
+            srcs = [_norm(f.filepath) for f in b.files]
+            if srcs and all(s in claimed for s in srcs):
+                continue  # every file already owned by an earlier domain
+            kept_books.append(b)
+        res.report.moves = [m for m in res.report.moves if _norm(m.source) not in claimed]
+
+        for b in kept_books:
+            for f in b.files:
+                claimed.add(_norm(f.filepath))
+        for m in res.report.moves:
+            claimed.add(_norm(m.source))
+
+        all_books.extend(kept_books)
         merged = merge_plan_reports(merged, res.report)
+
+    # After every domain has claimed what it can, sweep the remaining non-empty,
+    # unidentified content into needs-review (computed on the merged plan).
+    from quackaloger.reporting import collect_review_leftovers
+    collect_review_leftovers(merged, cfg.library_root, cfg.tool_dir)
 
     return merged, all_books
 
@@ -126,6 +155,7 @@ def organize_library_flow(
                 "books_processed": len(all_books),
                 "files_would_move": len(merged.moves),
                 "books_quarantined": len(merged.quarantine),
+                "would_review": len(merged.to_review),
             },
         )
         ui.info("This was a dry run. No files were moved.")

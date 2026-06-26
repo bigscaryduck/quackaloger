@@ -26,10 +26,14 @@ from quackaloger.constants import TOOL_DIR_NAME
 from quackaloger.fileops import execute_plan
 from quackaloger.history import finish_run, list_runs, load_run, start_run, undo_run
 from quackaloger.models import PlanReport
+from quackaloger.reporting import explain_outcome, write_reports
 from quackaloger.runner import build_extract_client_for_cfg, run_organize_domains
-from quackaloger.user_config import user_config_dir
+from quackaloger.user_config import load_user_yaml, user_config_dir
 
 PLAN_TTL_SECONDS = 24 * 60 * 60  # prune persisted plans older than a day
+
+# Domains that cannot run without a TMDB API key (see each domain's validate_config).
+DOMAINS_NEEDING_TMDB = {"plex_movies", "plex_tv"}
 
 
 # ---------------------------------------------------------------------------
@@ -45,6 +49,9 @@ class PlanBundle:
     cfg: Config
     report: PlanReport
     books: list = field(default_factory=list)
+    run_id: str = ""          # set when the scan was journaled as a dry-run
+    summary_path: str = ""    # saved summary report, if any
+    verbose_path: str = ""    # saved verbose report, if any
 
 
 def _plans_dir() -> str:
@@ -154,8 +161,15 @@ def scan(
     domain: str,
     *,
     overrides: Optional[dict] = None,
+    persist_report: bool = False,
 ) -> PlanBundle:
-    """Run the configured domain in dry-run mode, persist and return the plan."""
+    """Run the configured domain in dry-run mode, persist and return the plan.
+
+    When *persist_report* is True, the scan also leaves the same audit trail a
+    CLI dry-run does: a dry-run entry in the library's ``history/`` and a saved
+    summary + verbose report in ``logs/``. Watch-triggered scans leave it False
+    so a busy folder watcher does not flood history.
+    """
     prune_old_plans()
     cfg = build_config(library_path, domain, overrides=overrides, dry_run=True)
     extract_client = build_extract_client_for_cfg(cfg)
@@ -170,8 +184,56 @@ def scan(
         report=report,
         books=books,
     )
+
+    if persist_report:
+        run = start_run(cfg.tool_dir, cfg.library_root, {
+            "dry_run": True,
+            "organize_domains": list(cfg.organize_domains),
+            "llm_provider": cfg.llm_provider,
+            "source": "web-scan",
+        })
+        bundle.run_id = run.run_id
+        try:
+            summary_path, verbose_path = write_reports(
+                report, books, cfg.library_root, cfg.tool_dir, run.run_id,
+            )
+            bundle.summary_path = summary_path
+            bundle.verbose_path = verbose_path
+        finally:
+            finish_run(cfg.tool_dir, run, status="dry_run", summary={
+                "books_processed": len(books),
+                "files_would_move": len(report.moves),
+                "books_quarantined": len(report.quarantine),
+                "would_review": len(report.to_review),
+            })
+
     _save_bundle(bundle)
     return bundle
+
+
+def tmdb_key_available(library_path: str) -> bool:
+    """True if a TMDB key is resolvable for *library_path* (env, user, or library YAML).
+
+    Read-only and side-effect free (does not create the library tool dir), so it
+    is safe to call while rendering the dashboard.
+    """
+    if (os.environ.get("QUACK_TMDB_API_KEY") or os.environ.get("TMDB_API_KEY") or "").strip():
+        return True
+    keys = load_user_yaml().get("api_keys") or {}
+    if str(keys.get("tmdb") or "").strip():
+        return True
+    cfg_path = os.path.join(os.path.abspath(library_path), TOOL_DIR_NAME, "config.yaml")
+    if os.path.exists(cfg_path):
+        try:
+            import yaml
+            with open(cfg_path, "r", encoding="utf-8") as f:
+                data = yaml.safe_load(f) or {}
+            ident = data.get("identification") or {}
+            if str(ident.get("tmdb_api_key") or "").strip():
+                return True
+        except Exception:
+            pass
+    return False
 
 
 # ---------------------------------------------------------------------------
@@ -193,10 +255,12 @@ def _filtered_report(
     if selected_indexes is None:
         out.moves = list(report.moves)
         out.stale_metadata = list(report.stale_metadata)
+        out.to_review = list(report.to_review)
     else:
         sel = {int(i) for i in selected_indexes}
         out.moves = [m for i, m in enumerate(report.moves) if i in sel]
         out.stale_metadata = []
+        out.to_review = []  # only sweep leftovers on a full run
     out.quarantine = list(report.quarantine) if include_quarantine else []
     out.audible_stats = dict(report.audible_stats)
     out.domain_id = report.domain_id
@@ -294,6 +358,8 @@ def summarize_bundle(bundle: PlanBundle) -> dict:
         "created_at": bundle.created_at,
         "library_path": bundle.library_path,
         "domain": bundle.domain,
+        "reason": explain_outcome(report),
+        "run_id": bundle.run_id,
         "counts": {
             "moves": len(report.moves),
             "already_correct": len(report.already_correct),
@@ -302,10 +368,12 @@ def summarize_bundle(bundle: PlanBundle) -> dict:
             "quarantine": len(report.quarantine),
             "duplicates": len(report.duplicates),
             "stale_metadata": len(report.stale_metadata),
+            "to_review": len(report.to_review),
             "matched": int(report.audible_stats.get("matched", 0)),
             "unmatched": int(report.audible_stats.get("unmatched", 0)),
         },
         "moves": moves,
+        "to_review": [_rel(p, root) for p in report.to_review],
         "conflicts": report.conflicts,
         "ambiguous": [_book_summary(b, root) for b in report.ambiguous],
         "quarantine": [_book_summary(b, root) for b in report.quarantine],

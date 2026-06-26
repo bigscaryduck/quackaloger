@@ -128,6 +128,7 @@ class PlanReport:
     skipped_folders: list = field(default_factory=list)
     stale_metadata: list = field(default_factory=list)   # list[str] (paths)
     quarantine: list = field(default_factory=list)        # list[Book]
+    to_review: list = field(default_factory=list)         # list[str] unmatched leftover file paths
     audible_stats: dict = field(default_factory=dict)
     # Optional domain tag for logs / merged runs (e.g. audiobooks, plex_movies)
     domain_id: str = ""

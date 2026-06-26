@@ -94,12 +94,17 @@ def _render(request: "Request", name: str, ctx: dict) -> HTMLResponse:
 
 def _library_view(lib: dict) -> dict:
     runs = service.runs_for(lib["path"]) if os.path.isdir(lib["path"]) else []
+    tmdb_missing = (
+        lib["domain"] in service.DOMAINS_NEEDING_TMDB
+        and not service.tmdb_key_available(lib["path"])
+    )
     return {
         **lib,
         "exists": os.path.isdir(lib["path"]),
         "busy": manager.library_busy(lib["id"]),
         "last_run": runs[0] if runs else None,
         "run_count": len(runs),
+        "tmdb_missing": tmdb_missing,
     }
 
 
@@ -218,10 +223,19 @@ def library_delete(lib_id: str):
 # ---------------------------------------------------------------------------
 
 @app.post("/libraries/{lib_id}/scan")
-def library_scan(lib_id: str):
+def library_scan(request: Request, lib_id: str):
     lib = state.get_library(lib_id)
     if lib is None:
         return RedirectResponse("/", status_code=303)
+    if lib["domain"] in service.DOMAINS_NEEDING_TMDB and not service.tmdb_key_available(lib["path"]):
+        return _render(request, "message.html", {
+            "title": "TMDB API key required",
+            "body": (
+                f"The '{lib['domain']}' domain needs a TMDB API key to match titles, "
+                "but none is set. Add one on the Settings page (or via the "
+                "QUACK_TMDB_API_KEY / TMDB_API_KEY environment variable), then scan again."
+            ),
+        })
     job = actions.submit_scan(lib)
     return RedirectResponse(f"/jobs/{job.id}", status_code=303)
 

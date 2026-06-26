@@ -1,5 +1,5 @@
 """File operations: move, soft-delete to trash, mkdir, empty-dir cleanup.
-
+1. 
 Every operation is journaled via history.record_action().
 """
 

@@ -35,8 +35,6 @@ DEFAULT_DOMAIN_CONFIDENCE = {
     "audiobooks": DEFAULT_CONFIDENCE_THRESHOLD,
     "plex_movies": 0.82,
     "plex_tv": 0.82,
-    "comic_archives": 0.75,
-    "ebooks": 0.75,
 }
 
 
@@ -203,7 +201,7 @@ logging:
 organize_domains:
   - audiobooks
 
-# Per-domain confidence overrides (optional). Keys: audiobooks, plex_movies, plex_tv, comic_archives, ebooks
+# Per-domain confidence overrides (optional). Keys: audiobooks, plex_movies, plex_tv
 domain_thresholds: {}
 
 # --- Plex (Movie / TV Series + TMDB) naming templates ---

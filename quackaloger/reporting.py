@@ -35,16 +35,28 @@ def build_plan(
         "unmatched": len(books) - audible_matched,
     }
 
+    # Duplicate detection: two distinct source books that would land in the same
+    # place. Episodic libraries (plex_tv) legitimately share a Season folder, so
+    # there we compare the full destination FILE path (a real clash is the same
+    # SxxEyy from two sources); folder-based domains compare the target directory.
     for book in books:
-        if book.target_dir:
-            target_to_books[book.target_dir.lower()].append(book)
+        if not book.target_dir:
+            continue
+        if getattr(book, "domain_tag", "") == "plex_tv":
+            for f in book.files:
+                dest_name = getattr(f, "target_filename", None) or f.filename
+                key = os.path.normcase(os.path.join(book.target_dir, dest_name))
+                target_to_books[key].append(book)
+        else:
+            target_to_books[os.path.normcase(book.target_dir)].append(book)
 
     for target, dupe_books in target_to_books.items():
-        if len(dupe_books) > 1:
+        uniq = list({id(b): b for b in dupe_books}.values())
+        if len(uniq) > 1:
             report.duplicates.append({
-                "target": dupe_books[0].target_dir,
-                "sources": [b.source_dir for b in dupe_books],
-                "books": dupe_books,
+                "target": uniq[0].target_dir,
+                "sources": [b.source_dir for b in uniq],
+                "books": uniq,
             })
 
     for book in books:
@@ -93,6 +105,86 @@ def build_plan(
 
 
 # ---------------------------------------------------------------------------
+# Unmatched-leftover collection (content the organizer didn't place)
+# ---------------------------------------------------------------------------
+
+def _norm(path: str) -> str:
+    return os.path.normcase(os.path.normpath(path))
+
+
+def collect_review_leftovers(report: PlanReport, library_root: str, tool_dir: str) -> None:
+    """Populate ``report.to_review`` with every file the organizer won't place.
+
+    A "leftover" is any file under *library_root* (outside the tool dir) that is
+    not a planned move source, an already-correct file, a quarantined file, or a
+    stale sidecar headed for trash. On a full run these are relocated into
+    needs-review so non-empty, unidentified content is collected in one place
+    instead of being left scattered (or silently deleted). Empty folders are
+    still removed by the executor.
+
+    Operates on the MERGED report so a file organized by one domain is never
+    swept by another.
+    """
+    covered: set[str] = set()
+    for m in report.moves:
+        covered.add(_norm(m.source))
+    for b in report.already_correct:
+        for f in b.files:
+            covered.add(_norm(f.filepath))
+    for b in report.quarantine:
+        for f in b.files:
+            covered.add(_norm(f.filepath))
+    for p in report.stale_metadata:
+        covered.add(_norm(p))
+
+    tool_norm = _norm(tool_dir)
+    leftovers: list[str] = []
+    for dirpath, dirnames, filenames in os.walk(os.path.abspath(library_root)):
+        dp = _norm(dirpath)
+        if dp == tool_norm or dp.startswith(tool_norm + os.sep):
+            dirnames[:] = []  # never descend into .quackaloger
+            continue
+        for fn in filenames:
+            fp = os.path.join(dirpath, fn)
+            if _norm(fp) not in covered:
+                leftovers.append(fp)
+
+    report.to_review = leftovers
+
+
+# ---------------------------------------------------------------------------
+# Outcome explanation (why a plan has no moves)
+# ---------------------------------------------------------------------------
+
+def explain_outcome(report: PlanReport) -> str:
+    """One-line human reason a plan has no moves. Empty string when moves exist.
+
+    Distinguishes "found nothing" from "found things but nothing to do" so a
+    0-result run never looks like a silent failure.
+    """
+    if report.moves:
+        return ""
+    num = int(report.audible_stats.get("matched", 0)) + int(report.audible_stats.get("unmatched", 0))
+    if num == 0:
+        return "No matching media files were found in this library."
+    parts = []
+    if report.already_correct:
+        parts.append(f"{len(report.already_correct)} already correctly organized")
+    if report.quarantine:
+        parts.append(
+            f"{len(report.quarantine)} sent to needs-review "
+            "(unidentified or below the confidence threshold)"
+        )
+    if report.conflicts:
+        parts.append(f"{len(report.conflicts)} with metadata conflicts")
+    if report.duplicates:
+        parts.append(f"{len(report.duplicates)} pointing at duplicate targets")
+    if parts:
+        return f"Nothing to move: {num} item(s) scanned, " + "; ".join(parts) + "."
+    return f"Nothing to move: {num} item(s) scanned but none could be matched."
+
+
+# ---------------------------------------------------------------------------
 # Summary report (failures / anomalies only)
 # ---------------------------------------------------------------------------
 
@@ -104,7 +196,7 @@ def build_summary_report(report: PlanReport, library_root: str) -> str:
         lines.append(line)
 
     out("=" * 80)
-    out("  AUDIOBOOK ORGANIZER - SUMMARY REPORT")
+    out("  QUACKALOGER - SUMMARY REPORT")
     out(f"  Library: {library_root}")
     out(f"  Generated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
     out("=" * 80)
@@ -112,10 +204,11 @@ def build_summary_report(report: PlanReport, library_root: str) -> str:
     out(f"\n  Quick stats:")
     out(f"    Files to move:        {len(report.moves)}")
     out(f"    Already correct:      {len(report.already_correct)}")
-    out(f"    Catalog matched:      {report.audible_stats.get('matched', 0)}")
-    out(f"    Catalog unmatched:    {report.audible_stats.get('unmatched', 0)}")
+    out(f"    Matched:              {report.audible_stats.get('matched', 0)}")
+    out(f"    Unmatched:            {report.audible_stats.get('unmatched', 0)}")
     out(f"    Conflicts found:      {len(report.conflicts)}")
     out(f"    Quarantined:          {len(report.quarantine)}")
+    out(f"    To needs-review:      {len(report.to_review)}")
     out(f"    Duplicate targets:    {len(report.duplicates)}")
 
     if report.quarantine:
@@ -148,7 +241,8 @@ def build_summary_report(report: PlanReport, library_root: str) -> str:
     if report.moves:
         out("  To execute these changes, re-run with --execute")
     else:
-        out("  No changes needed!")
+        reason = explain_outcome(report)
+        out(f"  {reason}" if reason else "  No changes needed!")
     out(f"{'=' * 80}")
 
     return "\n".join(lines)
@@ -166,19 +260,20 @@ def build_verbose_report(report: PlanReport, books: list, library_root: str) -> 
         lines.append(line)
 
     out("=" * 80)
-    out("  AUDIOBOOK ORGANIZER - VERBOSE REPORT")
+    out("  QUACKALOGER - VERBOSE REPORT")
     out(f"  Library: {library_root}")
     out(f"  Generated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
     out("=" * 80)
 
     out(f"\n  Summary:")
-    out(f"    Total books:          {len(books)}")
+    out(f"    Total items:          {len(books)}")
     out(f"    Files to move:        {len(report.moves)}")
     out(f"    Already correct:      {len(report.already_correct)}")
-    out(f"    Catalog matched:      {report.audible_stats.get('matched', 0)}")
-    out(f"    Catalog unmatched:    {report.audible_stats.get('unmatched', 0)}")
+    out(f"    Matched:              {report.audible_stats.get('matched', 0)}")
+    out(f"    Unmatched:            {report.audible_stats.get('unmatched', 0)}")
     out(f"    Conflicts found:      {len(report.conflicts)}")
     out(f"    Quarantined:          {len(report.quarantine)}")
+    out(f"    To needs-review:      {len(report.to_review)}")
     out(f"    Duplicate targets:    {len(report.duplicates)}")
     out(f"    Stale sidecar files:  {len(report.stale_metadata)}")
     out(f"    Skipped (empty) dirs: {len(report.skipped_folders)}")
@@ -197,8 +292,16 @@ def build_verbose_report(report: PlanReport, books: list, library_root: str) -> 
         if book.audible_match:
             am = book.audible_match
             out(f"    Audible: '{am.title}' by {am.author} ASIN={am.asin} confidence={am.confidence:.2f}")
+        elif book.plex_match:
+            pm = book.plex_match
+            if pm.media_type == "tv":
+                out(f"    TMDB(tv): '{pm.show_title}' S{pm.season or 0:02d}E{pm.episode or 0:02d} "
+                    f"tmdb={pm.tmdb_id} confidence={pm.confidence:.2f}")
+            else:
+                out(f"    TMDB(movie): '{pm.title}' ({pm.year or '?'}) "
+                    f"tmdb={pm.tmdb_id} confidence={pm.confidence:.2f}")
         else:
-            out(f"    Audible: NONE")
+            out(f"    Match: NONE")
         for entry in book.resolution_log:
             out(f"    {entry}")
         if book.conflicts:
@@ -235,11 +338,19 @@ def build_verbose_report(report: PlanReport, books: list, library_root: str) -> 
         for f in report.stale_metadata:
             out(f"  {os.path.relpath(f, library_root)}")
 
+    if report.to_review:
+        out(f"\n{'─' * 80}")
+        out("  UNMATCHED CONTENT (moved to needs-review/ on a full --execute)")
+        out(f"{'─' * 80}")
+        for f in report.to_review:
+            out(f"  {os.path.relpath(f, library_root)}")
+
     out(f"\n{'=' * 80}")
     if report.moves:
         out("  To execute these changes, re-run with --execute")
     else:
-        out("  No changes needed!")
+        reason = explain_outcome(report)
+        out(f"  {reason}" if reason else "  No changes needed!")
     out(f"{'=' * 80}")
 
     return "\n".join(lines)

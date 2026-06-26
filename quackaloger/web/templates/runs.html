@@ -25,6 +25,7 @@
         {% set s = r.run.summary %}
         {% if s.get('files_moved') is not none %}{{ s.files_moved }} moved{% endif %}
         {% if s.get('books_quarantined') %}, {{ s.books_quarantined }} quarantined{% endif %}
+        {% if s.get('unmatched_reviewed') %}, {{ s.unmatched_reviewed }} to needs-review{% endif %}
         {% if s.get('empty_dirs_removed') %}, {{ s.empty_dirs_removed }} dirs cleaned{% endif %}
       </td>
       <td>

@@ -14,7 +14,7 @@ from quackaloger.models import Book, PlanReport, PlexMatch
 from quackaloger.plex_discovery import scan_tv_episode_books
 from quackaloger.plex_format import sanitize_path_component
 from quackaloger.reporting import build_plan
-from quackaloger.tmdb import TmdbClient
+from quackaloger.tmdb import TmdbClient, tv_candidate
 from quackaloger.ui import ui
 
 TMDB_TV_PICK_SCHEMA = {
@@ -51,19 +51,36 @@ class PlexTvDomain:
 
         books = scan_tv_episode_books(cfg.library_root, verbose=verbose)
         if not books:
-            ui.info("No TV episode files found under Season folders.")
+            ui.info("No TV episode files recognized (looked for SxxEyy markers in file/folder names).")
             rep = PlanReport()
             rep.domain_id = self.id
             return OrganizeResult(domain_id=self.id, report=rep, books=[])
 
-        show_title = books[0].series or "Unknown"
-        show_tmdb_id, show_conf = self._resolve_show(show_title, cfg, tmdb, ctx.extract_client, verbose)
+        # Group episodes by show so each distinct show is resolved on TMDB once.
+        shows: dict[str, list] = {}
+        for book in books:
+            shows.setdefault((book.series or "Unknown").strip().lower(), []).append(book)
 
-        ui.phase(3, f"TMDB identification for {len(books)} TV episodes")
+        resolved: dict[str, tuple[int, float, str]] = {}
+        for key, group in shows.items():
+            parsed_title = group[0].series or "Unknown"
+            tmdb_id, conf, canonical = self._resolve_show(
+                parsed_title, cfg, tmdb, ctx.extract_client, verbose
+            )
+            # Prefer TMDB's canonical name for the folder; fall back to what we parsed.
+            resolved[key] = (tmdb_id, conf, canonical or parsed_title)
+            if verbose:
+                ui.verbose(
+                    f"[plex_tv] {parsed_title!r} -> {canonical!r} tmdb_id={tmdb_id} "
+                    f"conf={conf:.2f} ({len(group)} episodes)"
+                )
+
+        ui.phase(3, f"TMDB identification for {len(books)} TV episodes across {len(shows)} shows")
         with ui.progress(len(books), desc="TMDB (tv)") as progress:
             task = progress.add_task("TMDB (tv)", total=len(books))
             for book in books:
-                self._episode_path(book, cfg, show_tmdb_id, show_title, show_conf, thresh)
+                tmdb_id, conf, show_title = resolved[(book.series or "Unknown").strip().lower()]
+                self._episode_path(book, cfg, tmdb_id, show_title, conf, thresh)
                 progress.advance(task)
 
         folders: dict = {}
@@ -87,10 +104,12 @@ class PlexTvDomain:
         tmdb: TmdbClient,
         extract_client,
         verbose: bool,
-    ) -> tuple[int, float]:
+    ) -> tuple[int, float, str]:
+        """Return (tmdb_id, confidence, canonical_name). tmdb_id is -1 if unresolved."""
         results = tmdb.search_tv(show_title, verbose=verbose)[:10]
         if not results:
-            return -1, 0.0
+            return -1, 0.0, ""
+        by_id = {r.get("id"): (r.get("name") or "") for r in results}
         picked_id: int | None = None
         conf = 0.0
         if extract_client and cfg.enable_ai and not cfg.no_ai:
@@ -99,14 +118,16 @@ class PlexTvDomain:
                 f"Show folder/title hint: {show_title}",
                 "",
                 "Candidates (JSON):",
-                json.dumps(
-                    [
-                        {"tmdb_id": r.get("id"), "name": r.get("name"), "first_air_date": r.get("first_air_date")}
-                        for r in results[:8]
-                    ],
-                    indent=2,
-                ),
-                "Return tmdb_id=-1 if none match.",
+                json.dumps([tv_candidate(r) for r in results[:8]], indent=2),
+                "",
+                "Disambiguation guidance:",
+                "- A hint may name a regional edition of a format (e.g. 'Taskmaster "
+                "Australia', 'The Office US'). TMDB often lists these under the base "
+                "name, so match on origin_country / original_language / original_name "
+                "rather than requiring the region word in 'name'.",
+                "- If a year appears in the hint, prefer the candidate whose "
+                "first_air_date matches; popularity breaks otherwise-equal ties.",
+                "Return tmdb_id=-1 only if no candidate plausibly matches.",
             ]
             try:
                 data = extract_client.extract(
@@ -115,8 +136,8 @@ class PlexTvDomain:
                     temperature=0.0,
                 )
                 tid = int(data.get("tmdb_id", -1))
-                if tid > 0 and any(r.get("id") == tid for r in results):
-                    return tid, 0.95
+                if tid > 0 and tid in by_id:
+                    return tid, 0.95, by_id[tid]
             except ExtractError as e:
                 if verbose:
                     ui.verbose(f"[plex_tv] LLM show pick failed: {e}")
@@ -124,14 +145,16 @@ class PlexTvDomain:
         best = None
         best_score = 0.0
         for r in results[:5]:
-            name = r.get("name") or ""
-            score = _fuzzy(name, show_title)
+            score = max(
+                _fuzzy(r.get("name") or "", show_title),
+                _fuzzy(r.get("original_name") or "", show_title),
+            )
             if score > best_score:
                 best_score = score
                 best = r
         if best and best_score >= 0.45:
-            return int(best["id"]), best_score
-        return -1, 0.0
+            return int(best["id"]), best_score, (best.get("name") or "")
+        return -1, 0.0, ""
 
     def _episode_path(
         self,
@@ -148,9 +171,13 @@ class PlexTvDomain:
 
         f0 = book.files[0]
         season = int(f0.fn_book_number) if f0.fn_book_number is not None else 1
-        m = re.search(r"S(\d+)E(\d+)", f0.filename, re.I)
-        episode = int(m.group(2)) if m else 1
-        ep_title = sanitize_path_component(os.path.splitext(f0.filename)[0])
+        if book.sequence and str(book.sequence).isdigit():
+            episode = int(book.sequence)
+        else:
+            m = re.search(r"S(\d+)E(\d+)", f0.filename, re.I)
+            episode = int(m.group(2)) if m else 1
+        raw_ep_title = (book.title or "").strip()
+        ep_title = sanitize_path_component(raw_ep_title) if raw_ep_title else ""
 
         pm = PlexMatch(
             tmdb_id=show_tmdb_id,
@@ -181,6 +208,11 @@ class PlexTvDomain:
             tmdb_id=show_tmdb_id,
             ext=ext,
         )
+        # Tidy the artifacts an empty episode title leaves behind, e.g.
+        # "S04E01 -  {tmdb-1}.mkv" -> "S04E01 {tmdb-1}.mkv".
+        if not ep_title:
+            fname = re.sub(r"\s*-\s*(?=\{tmdb-)", " ", fname)
+        fname = re.sub(r"\s{2,}", " ", fname)
         book.target_dir = os.path.join(
             cfg.library_root, show_folder, f"Season {season:02d}",
         )

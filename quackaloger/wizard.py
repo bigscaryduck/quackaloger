@@ -36,12 +36,12 @@ def run_wizard() -> None:
     data = load_user_yaml()
     data.setdefault("version", 1)
 
+    # Only shipped domains are offered. comic_archives / ebooks are registered as
+    # backlog stubs (see domains/stub_print.py) and intentionally not selectable.
     choices = [
         "audiobooks",
         "plex_movies",
         "plex_tv",
-        "comic_archives",
-        "ebooks",
     ]
     ui.info("Select one or more organizer domains (space to toggle in TUI clients):")
     picked = ui.prompt_checkbox(

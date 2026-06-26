@@ -30,6 +30,7 @@
     <div class="row" style="margin-top:8px">
       <span class="badge pink">{{ lib.domain }}</span>
       {% if not lib.exists %}<span class="badge err">path missing</span>{% endif %}
+      {% if lib.tmdb_missing %}<span class="badge err">TMDB key needed</span>{% endif %}
       {% if lib.busy %}<span class="badge warn">job running</span>{% endif %}
       {% if lib.watch.enabled %}<span class="badge ok">watch: {{ lib.watch.mode }}</span>{% endif %}
       {% if lib.run_count %}<span class="badge">{{ lib.run_count }} runs</span>{% endif %}
@@ -39,8 +40,9 @@
     {% endif %}
     <div class="row" style="margin-top:12px">
       <form method="post" action="/libraries/{{ lib.id }}/scan">
-        <button class="btn primary small" {% if not lib.exists or lib.busy %}disabled{% endif %}>Scan</button>
+        <button class="btn primary small" {% if not lib.exists or lib.busy or lib.tmdb_missing %}disabled{% endif %}>Scan</button>
       </form>
+      {% if lib.tmdb_missing %}<span class="help">Set a TMDB key in <a href="/settings">Settings</a> to enable scanning.</span>{% endif %}
       <a class="btn small" href="/libraries/{{ lib.id }}/edit">Edit</a>
       <form method="post" action="/libraries/{{ lib.id }}/delete" onsubmit="return confirm('Delete this library entry? (Files are not touched.)')">
         <button class="btn small danger">Delete</button>

@@ -18,7 +18,9 @@ def submit_scan(library: dict) -> Job:
 
     def _fn(job: Job) -> None:
         bundle = service.scan(
-            library["path"], library["domain"], overrides=library.get("overrides")
+            library["path"], library["domain"],
+            overrides=library.get("overrides"),
+            persist_report=True,  # manual scans leave a saved report + history entry
         )
         job.plan_id = bundle.plan_id
         job.result = service.summarize_bundle(bundle)

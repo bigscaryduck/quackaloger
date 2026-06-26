@@ -16,6 +16,7 @@
     <span class="badge warn">{{ plan.counts.unmatched }} unmatched</span>
     {% if plan.counts.conflicts %}<span class="badge err">{{ plan.counts.conflicts }} conflicts</span>{% endif %}
     {% if plan.counts.quarantine %}<span class="badge warn">{{ plan.counts.quarantine }} quarantine</span>{% endif %}
+    {% if plan.counts.to_review %}<span class="badge warn">{{ plan.counts.to_review }} to needs-review</span>{% endif %}
     {% if plan.counts.duplicates %}<span class="badge err">{{ plan.counts.duplicates }} duplicate targets</span>{% endif %}
   </div>
 </div>
@@ -46,7 +47,7 @@
   </div>
 </form>
 {% else %}
-<div class="card"><p class="empty">Nothing to move — the library is already organized.</p></div>
+<div class="card"><p class="empty">{{ plan.reason or "Nothing to move — the library is already organized." }}</p></div>
 {% endif %}
 
 {% if plan.quarantine %}
@@ -57,6 +58,19 @@
     {% for b in plan.quarantine %}
     <tr><td class="mono">{{ b.source_rel }}</td><td>{{ b.author or '—' }}</td><td>{{ b.title or '—' }}</td>
       <td>{{ '%.2f'|format(b.confidence) if b.confidence is not none else '—' }}</td></tr>
+    {% endfor %}
+  </tbody>
+</table>
+{% endif %}
+
+{% if plan.to_review %}
+<h2>To needs-review ({{ plan.to_review|length }})</h2>
+<p class="meta">Non-empty, unidentified content moved into <span class="mono">.quackaloger/needs-review</span> on a full run. Empty folders are removed.</p>
+<table>
+  <thead><tr><th>File</th></tr></thead>
+  <tbody>
+    {% for p in plan.to_review %}
+    <tr><td class="mono">{{ p }}</td></tr>
     {% endfor %}
   </tbody>
 </table>
