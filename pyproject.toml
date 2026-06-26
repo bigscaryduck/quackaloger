@@ -18,8 +18,22 @@ dependencies = [
     "pyfiglet",
 ]
 
+[project.optional-dependencies]
+web = [
+    "fastapi",
+    "uvicorn[standard]",
+    "jinja2",
+    "python-multipart",
+    "watchdog",
+]
+
 [tool.setuptools.packages.find]
 where = ["."]
+include = ["quackaloger*"]
+
+[tool.setuptools.package-data]
+"quackaloger.web" = ["templates/*.html", "static/*"]
 
 [project.scripts]
 quackaloger = "quackaloger.cli:main"
+quackaloger-web = "quackaloger.web.app:main"

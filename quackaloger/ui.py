@@ -6,7 +6,7 @@ and never import rich or questionary directly.
 
 import sys
 from contextlib import contextmanager
-from typing import Any, Optional, Sequence
+from typing import Any, Callable, Optional, Sequence
 
 from rich.console import Console
 from rich.panel import Panel
@@ -38,12 +38,48 @@ from quackaloger.theme import (
 )
 
 
+class _SinkProgress(Progress):
+    """rich.Progress that also mirrors task updates to the UI event sink.
+
+    Lets the web job worker stream a live {completed, total} bar without any
+    domain code knowing about the web layer.
+    """
+
+    def __init__(self, *columns, ui_ref=None, **kwargs):
+        self._ui_ref = ui_ref
+        super().__init__(*columns, **kwargs)
+
+    def _emit_task(self, task_id) -> None:
+        ui_ref = self._ui_ref
+        if ui_ref is None or ui_ref._sink is None:
+            return
+        try:
+            task = self._tasks[task_id]
+            ui_ref._emit({
+                "type": "progress",
+                "desc": str(task.description),
+                "completed": float(task.completed),
+                "total": float(task.total) if task.total is not None else None,
+            })
+        except Exception:
+            pass
+
+    def advance(self, task_id, advance: float = 1) -> None:
+        super().advance(task_id, advance)
+        self._emit_task(task_id)
+
+    def update(self, task_id, **kwargs) -> None:
+        super().update(task_id, **kwargs)
+        self._emit_task(task_id)
+
+
 class UI:
     """Singleton wrapping rich.Console + questionary for branded output."""
 
     def __init__(self, console: Console = None):
         self._console = console or Console(highlight=False)
         self._verbose = False
+        self._sink: Optional[Callable[[dict], None]] = None
 
     # ------------------------------------------------------------------
     # Lifecycle
@@ -56,6 +92,32 @@ class UI:
     @property
     def is_interactive(self) -> bool:
         return sys.stdin.isatty()
+
+    # ------------------------------------------------------------------
+    # Event sink (for the web UI -- mirrors output to a callback)
+    # ------------------------------------------------------------------
+
+    def set_sink(self, callback: Optional[Callable[[dict], None]]) -> None:
+        """Route a copy of every message/progress event to *callback*.
+
+        Used by the web job worker to stream live progress. The terminal
+        output is unaffected. Jobs run serially, so only one sink is ever
+        active at a time.
+        """
+        self._sink = callback
+
+    def clear_sink(self) -> None:
+        self._sink = None
+
+    def _emit(self, event: dict) -> None:
+        if self._sink is not None:
+            try:
+                self._sink(event)
+            except Exception:
+                pass
+
+    def _log(self, level: str, msg: str) -> None:
+        self._emit({"type": "log", "level": level, "text": msg})
 
     # ------------------------------------------------------------------
     # Banner
@@ -121,9 +183,11 @@ class UI:
 
     def success(self, msg: str) -> None:
         self._console.print(f"  {msg}", style=STYLE_SUCCESS)
+        self._log("success", msg)
 
     def error(self, msg: str) -> None:
         self._console.print(f"  {msg}", style=STYLE_ERROR)
+        self._log("error", msg)
 
     def error_panel(self, title: str, msg: str) -> None:
         self._console.print()
@@ -136,19 +200,24 @@ class UI:
                 padding=(1, 2),
             )
         )
+        self._log("error", f"{title}: {msg}")
 
     def warn(self, msg: str) -> None:
         self._console.print(f"  {msg}", style=STYLE_WARN)
+        self._log("warn", msg)
 
     def info(self, msg: str) -> None:
         self._console.print(f"  {msg}", style=STYLE_INFO)
+        self._log("info", msg)
 
     def muted(self, msg: str) -> None:
         self._console.print(f"  {msg}", style=STYLE_MUTED)
+        self._log("muted", msg)
 
     def verbose(self, msg: str) -> None:
         if self._verbose:
             self._console.print(f"  {msg}", style=STYLE_INFO)
+            self._log("verbose", msg)
 
     def text(self, msg: str, style: str = "") -> None:
         """Print a line with an optional explicit style."""
@@ -164,6 +233,7 @@ class UI:
             Rule(f" Phase {n}: {title} ", characters="\u2500", style=STYLE_PHASE)
         )
         self._console.print()
+        self._emit({"type": "phase", "n": n, "title": title})
 
     def rule(self, title: str = "") -> None:
         if title:
@@ -204,8 +274,11 @@ class UI:
     # ------------------------------------------------------------------
 
     def progress(self, total: int, desc: str = "", unit: str = "files") -> Progress:
-        """Return a rich.Progress context manager styled per brand."""
-        return Progress(
+        """Return a rich.Progress context manager styled per brand.
+
+        When a sink is active (web job), task advances are also mirrored to it.
+        """
+        return _SinkProgress(
             SpinnerColumn(spinner_name="dots", style=CYAN),
             TextColumn("[dim]{task.description}"),
             BarColumn(complete_style=PINK, finished_style=PINK, bar_width=30),
@@ -213,11 +286,13 @@ class UI:
             TimeRemainingColumn(),
             console=self._console,
             transient=False,
+            ui_ref=self,
         )
 
     @contextmanager
     def spinner(self, msg: str):
         """Context manager showing a dots spinner with a message."""
+        self._log("info", msg)
         with self._console.status(msg, spinner="dots", spinner_style=CYAN):
             yield
 

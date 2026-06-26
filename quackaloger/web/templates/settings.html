@@ -1,0 +1,46 @@
+{% extends "base.html" %}
+{% block title %}Settings · Quackaloger{% endblock %}
+{% block content %}
+<h1>Settings</h1>
+<p class="meta">Global defaults shared with the CLI (written to the user config). Per-library overrides live on each library.</p>
+
+<form method="post" action="/settings">
+  <fieldset>
+    <legend>AI matching</legend>
+    <div class="field inline">
+      <input type="checkbox" name="enable_ai" id="enable_ai" {% if enable_ai %}checked{% endif %}>
+      <label for="enable_ai" style="margin:0">Enable AI-assisted matching</label>
+    </div>
+    <div class="field">
+      <label>Provider</label>
+      <select name="provider">
+        <option value="openai" {% if provider == 'openai' %}selected{% endif %}>openai</option>
+        <option value="anthropic" {% if provider == 'anthropic' %}selected{% endif %}>anthropic</option>
+      </select>
+    </div>
+    <div class="field">
+      <label>Model (optional — blank uses release default)</label>
+      <input type="text" name="model" value="{{ model }}" placeholder="e.g. gpt-4o-mini / claude-haiku-4-5">
+    </div>
+  </fieldset>
+
+  <fieldset>
+    <legend>API keys</legend>
+    <p class="help">Leave blank to keep the current value (or to rely on environment variables, which take precedence). Stored values are never shown.</p>
+    <div class="field">
+      <label>OpenAI {% if has_openai %}<span class="badge ok">set</span>{% else %}<span class="badge warn">not set</span>{% endif %}</label>
+      <input type="password" name="openai_key" autocomplete="off" placeholder="sk-…">
+    </div>
+    <div class="field">
+      <label>Anthropic {% if has_anthropic %}<span class="badge ok">set</span>{% else %}<span class="badge warn">not set</span>{% endif %}</label>
+      <input type="password" name="anthropic_key" autocomplete="off" placeholder="sk-ant-…">
+    </div>
+    <div class="field">
+      <label>TMDB (Plex domains) {% if has_tmdb %}<span class="badge ok">set</span>{% else %}<span class="badge warn">not set</span>{% endif %}</label>
+      <input type="password" name="tmdb_key" autocomplete="off" placeholder="TMDB v3 API key">
+    </div>
+  </fieldset>
+
+  <button class="btn primary" type="submit">Save settings</button>
+</form>
+{% endblock %}

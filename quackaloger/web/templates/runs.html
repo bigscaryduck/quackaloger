@@ -1,0 +1,43 @@
+{% extends "base.html" %}
+{% block title %}History · Quackaloger{% endblock %}
+{% block content %}
+<h1>Run history</h1>
+
+{% if not rows %}
+<div class="card"><p class="empty">No runs yet.</p></div>
+{% else %}
+<table>
+  <thead>
+    <tr><th>Started</th><th>Library</th><th>Status</th><th>Summary</th><th></th></tr>
+  </thead>
+  <tbody>
+    {% for r in rows %}
+    <tr>
+      <td>{{ r.run.started_at|ts }}</td>
+      <td>{{ r.library.name or r.library.path }} <span class="badge pink">{{ r.library.domain }}</span></td>
+      <td>
+        {% if r.run.status == 'completed' %}<span class="badge ok">completed</span>
+        {% elif r.run.status == 'dry_run' %}<span class="badge">dry run</span>
+        {% elif r.run.status == 'failed' %}<span class="badge err">failed</span>
+        {% else %}<span class="badge">{{ r.run.status }}</span>{% endif %}
+      </td>
+      <td class="meta">
+        {% set s = r.run.summary %}
+        {% if s.get('files_moved') is not none %}{{ s.files_moved }} moved{% endif %}
+        {% if s.get('books_quarantined') %}, {{ s.books_quarantined }} quarantined{% endif %}
+        {% if s.get('empty_dirs_removed') %}, {{ s.empty_dirs_removed }} dirs cleaned{% endif %}
+      </td>
+      <td>
+        {% if r.run.status == 'completed' %}
+        <form method="post" action="/runs/{{ r.library.id }}/{{ r.run.run_id }}/undo"
+              onsubmit="return confirm('Undo this run? Files will be moved back.')">
+          <button class="btn small danger">Undo</button>
+        </form>
+        {% endif %}
+      </td>
+    </tr>
+    {% endfor %}
+  </tbody>
+</table>
+{% endif %}
+{% endblock %}

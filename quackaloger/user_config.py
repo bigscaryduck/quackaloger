@@ -14,6 +14,11 @@ from quackaloger import llm_models
 
 
 def user_config_dir() -> str:
+    # Explicit override (containers/tests): pin the state dir without touching
+    # APPDATA, which on Windows also controls Python's user site-packages.
+    override = os.environ.get("QUACK_CONFIG_DIR")
+    if override:
+        return override
     if os.name == "nt":
         base = os.environ.get("APPDATA") or os.path.expanduser("~")
         return os.path.join(base, "quackaloger")
@@ -86,6 +91,18 @@ def load_user_yaml() -> dict[str, Any]:
         return data if isinstance(data, dict) else {}
     except Exception:
         return {}
+
+
+def save_user_yaml(data: dict[str, Any]) -> str:
+    """Write the machine-wide user config back to disk. Returns the path."""
+    if yaml is None:
+        raise RuntimeError("PyYAML is required to write user config")
+    d = user_config_dir()
+    os.makedirs(d, exist_ok=True)
+    path = user_config_path()
+    with open(path, "w", encoding="utf-8") as f:
+        yaml.safe_dump(data, f, sort_keys=False, allow_unicode=True)
+    return path
 
 
 def apply_user_yaml_to_config(cfg: Any, data: dict[str, Any]) -> None:

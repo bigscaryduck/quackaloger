@@ -1,0 +1,132 @@
+{% extends "base.html" %}
+{% block title %}{{ "Edit" if lib else "Add" }} library · Quackaloger{% endblock %}
+{% block content %}
+<h1>{{ "Edit library" if lib else "Add library" }}</h1>
+
+<form method="post" action="{{ ('/libraries/' ~ lib.id) if lib else '/libraries' }}">
+  <div class="field">
+    <label>Name</label>
+    <input type="text" name="name" value="{{ lib.name if lib else '' }}" placeholder="e.g. Audiobooks">
+  </div>
+
+  <div class="field">
+    <label>Folder path</label>
+    <div class="row">
+      <input type="text" name="path" id="path" required value="{{ lib.path if lib else '' }}" placeholder="/data/audiobooks">
+      <button type="button" class="btn" onclick="openBrowse()">Browse…</button>
+    </div>
+    <div class="help">Path as seen inside the container (the mounted volume).</div>
+  </div>
+
+  <div class="field">
+    <label>Domain</label>
+    <select name="domain">
+      {% for d in domains %}
+      <option value="{{ d }}" {% if lib and lib.domain == d %}selected{% endif %}>{{ d }}</option>
+      {% endfor %}
+    </select>
+  </div>
+
+  <fieldset>
+    <legend>Overrides (optional)</legend>
+    <div class="field">
+      <label>Confidence threshold</label>
+      <input type="number" step="0.01" min="0" max="1" name="confidence"
+             value="{{ lib.overrides.confidence if lib and lib.overrides.confidence is not none else '' }}"
+             placeholder="domain default">
+    </div>
+    <div class="field">
+      <label>LLM provider</label>
+      <select name="llm_provider">
+        <option value="">(use global default)</option>
+        <option value="openai" {% if lib and lib.overrides.llm_provider == 'openai' %}selected{% endif %}>openai</option>
+        <option value="anthropic" {% if lib and lib.overrides.llm_provider == 'anthropic' %}selected{% endif %}>anthropic</option>
+      </select>
+    </div>
+    <div class="field inline">
+      <input type="checkbox" name="no_ai" id="no_ai" {% if lib and lib.overrides.no_ai %}checked{% endif %}>
+      <label for="no_ai" style="margin:0">Disable AI matching (fuzzy only)</label>
+    </div>
+    <div class="field inline">
+      <input type="checkbox" name="no_audible" id="no_audible" {% if lib and lib.overrides.no_audible %}checked{% endif %}>
+      <label for="no_audible" style="margin:0">Skip Audible lookups (audiobooks only)</label>
+    </div>
+  </fieldset>
+
+  <fieldset>
+    <legend>Folder watch</legend>
+    <div class="field inline">
+      <input type="checkbox" name="watch_enabled" id="watch_enabled" {% if lib and lib.watch.enabled %}checked{% endif %}>
+      <label for="watch_enabled" style="margin:0">Watch this folder for new files</label>
+    </div>
+    <div class="field">
+      <label>On new files</label>
+      <select name="watch_mode">
+        {% for m in watch_modes %}
+        <option value="{{ m }}" {% if lib and lib.watch.mode == m %}selected{% elif not lib and m == 'scan-only' %}selected{% endif %}>{{ m }}</option>
+        {% endfor %}
+      </select>
+      <div class="help"><b>scan-only</b>: build a plan to review. <b>auto-organize</b>: scan and move files automatically (low-confidence items still go to needs-review; every run is undoable).</div>
+    </div>
+    <div class="field">
+      <label>Debounce (seconds of quiet before triggering)</label>
+      <input type="number" min="1" name="debounce_seconds" value="{{ lib.watch.debounce_seconds if lib else 30 }}">
+    </div>
+  </fieldset>
+
+  <div class="row">
+    <button class="btn primary" type="submit">{{ "Save changes" if lib else "Add library" }}</button>
+    <a class="btn" href="/">Cancel</a>
+  </div>
+</form>
+
+<div class="modal-backdrop" id="browse">
+  <div class="modal">
+    <div class="row"><h3 style="margin:0">Pick a folder</h3><div class="spacer"></div><button class="btn small" onclick="closeBrowse()">✕</button></div>
+    <div class="mono" id="browse-cwd" style="margin:10px 0;color:var(--muted)"></div>
+    <ul class="browse-list" id="browse-list"></ul>
+    <div class="row">
+      <button class="btn primary" onclick="useCurrent()">Use this folder</button>
+      <button class="btn" onclick="closeBrowse()">Cancel</button>
+    </div>
+  </div>
+</div>
+
+{% block scripts %}
+<script>
+let curPath = "";
+function openBrowse() {
+  const start = document.getElementById('path').value || "";
+  load(start);
+  document.getElementById('browse').classList.add('open');
+}
+function closeBrowse() { document.getElementById('browse').classList.remove('open'); }
+async function load(path) {
+  const res = await fetch('/api/browse?path=' + encodeURIComponent(path || ''));
+  const data = await res.json();
+  if (data.error) { alert(data.error); return; }
+  curPath = data.path || "";
+  document.getElementById('browse-cwd').textContent = curPath || "(roots)";
+  const list = document.getElementById('browse-list');
+  list.innerHTML = "";
+  if (data.parent !== null && data.parent !== undefined && curPath) {
+    addItem(list, "⬆ ..", data.parent);
+  }
+  (data.dirs || []).forEach(d => addItem(list, "📁 " + d.name, d.path));
+  if (!(data.dirs || []).length && curPath) {
+    const li = document.createElement('li'); li.textContent = "(no subfolders)"; li.style.color = "var(--muted)"; list.appendChild(li);
+  }
+}
+function addItem(list, label, path) {
+  const li = document.createElement('li');
+  li.textContent = label;
+  li.onclick = () => load(path);
+  list.appendChild(li);
+}
+function useCurrent() {
+  if (curPath) { document.getElementById('path').value = curPath; }
+  closeBrowse();
+}
+</script>
+{% endblock %}
+{% endblock %}

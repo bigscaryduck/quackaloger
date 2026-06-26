@@ -1,0 +1,69 @@
+{% extends "base.html" %}
+{% block title %}{{ job.label }} · Quackaloger{% endblock %}
+{% block content %}
+<div class="row">
+  <h1>{{ job.label }}</h1>
+  <div class="spacer"></div>
+  <span class="badge" id="status">{{ job.status }}</span>
+</div>
+
+<div class="progress-wrap"><div class="progress-bar" id="bar"></div></div>
+<div class="meta" id="progress-text"></div>
+
+<div class="log" id="log"></div>
+
+<div class="row" id="actions" style="margin-top:14px"></div>
+
+{% block scripts %}
+<script>
+const JOB_ID = "{{ job.id }}";
+const JOB_KIND = "{{ job.kind }}";
+const logEl = document.getElementById('log');
+const statusEl = document.getElementById('status');
+const bar = document.getElementById('bar');
+const ptext = document.getElementById('progress-text');
+const actions = document.getElementById('actions');
+
+function addLog(line) {
+  const div = document.createElement('div');
+  div.className = line.level || 'info';
+  div.textContent = line.text;
+  logEl.appendChild(div);
+  logEl.scrollTop = logEl.scrollHeight;
+}
+
+function setStatus(s) {
+  statusEl.textContent = s;
+  statusEl.className = 'badge ' + (s === 'done' ? 'ok' : s === 'error' ? 'err' : s === 'running' ? 'warn' : '');
+}
+
+function finalize(d) {
+  if ((JOB_KIND === 'scan' || JOB_KIND === 'auto') && d.plan_id) {
+    actions.innerHTML = '<a class="btn primary" href="/plans/' + d.plan_id + '">Review plan</a> <a class="btn" href="/">Dashboard</a>';
+  } else if (JOB_KIND === 'execute') {
+    actions.innerHTML = '<a class="btn primary" href="/runs">View history</a> <a class="btn" href="/">Dashboard</a>';
+  } else {
+    actions.innerHTML = '<a class="btn" href="/">Dashboard</a>';
+  }
+}
+
+const ev = new EventSource('/jobs/' + JOB_ID + '/events');
+ev.onmessage = (e) => {
+  const d = JSON.parse(e.data);
+  (d.log || []).forEach(addLog);
+  if (d.progress && d.progress.total) {
+    const pct = Math.min(100, 100 * d.progress.completed / d.progress.total);
+    bar.style.width = pct + '%';
+    ptext.textContent = (d.progress.desc || '') + '  ' + Math.round(d.progress.completed) + ' / ' + Math.round(d.progress.total);
+  }
+  setStatus(d.status);
+  if (d.status === 'done' || d.status === 'error') {
+    if (d.status === 'done') bar.style.width = '100%';
+    ev.close();
+    finalize(d);
+  }
+};
+ev.onerror = () => { setStatus('disconnected'); ev.close(); };
+</script>
+{% endblock %}
+{% endblock %}

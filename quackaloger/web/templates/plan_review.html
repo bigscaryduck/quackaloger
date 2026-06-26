@@ -1,0 +1,94 @@
+{% extends "base.html" %}
+{% block title %}Review plan · Quackaloger{% endblock %}
+{% block content %}
+<div class="row">
+  <h1>Review plan</h1>
+  <div class="spacer"></div>
+  <a class="btn" href="/">Back</a>
+</div>
+<p class="meta mono">{{ plan.library_path }} · <span class="badge pink">{{ plan.domain }}</span></p>
+
+<div class="card">
+  <div class="row">
+    <span class="badge pink">{{ plan.counts.moves }} moves</span>
+    <span class="badge">{{ plan.counts.already_correct }} already correct</span>
+    <span class="badge ok">{{ plan.counts.matched }} matched</span>
+    <span class="badge warn">{{ plan.counts.unmatched }} unmatched</span>
+    {% if plan.counts.conflicts %}<span class="badge err">{{ plan.counts.conflicts }} conflicts</span>{% endif %}
+    {% if plan.counts.quarantine %}<span class="badge warn">{{ plan.counts.quarantine }} quarantine</span>{% endif %}
+    {% if plan.counts.duplicates %}<span class="badge err">{{ plan.counts.duplicates }} duplicate targets</span>{% endif %}
+  </div>
+</div>
+
+{% if plan.moves %}
+<form method="post" action="/plans/{{ plan.plan_id }}/execute">
+  <div class="row" style="margin:10px 0">
+    <label class="inline" style="margin:0"><input type="checkbox" id="all" checked onclick="toggleAll(this)"> Select all</label>
+    <div class="spacer"></div>
+    <label class="inline" style="margin:0"><input type="checkbox" name="include_quarantine"> Also quarantine unidentified ({{ plan.counts.quarantine }})</label>
+  </div>
+  <table>
+    <thead><tr><th></th><th>Type</th><th>Source</th><th>Destination</th></tr></thead>
+    <tbody>
+      {% for m in plan.moves %}
+      <tr>
+        <td><input type="checkbox" class="mv" name="selected" value="{{ m.index }}" checked></td>
+        <td><span class="badge">{{ m.file_type }}</span></td>
+        <td class="mono">{{ m.source_rel }}</td>
+        <td class="mono dest">{{ m.dest_rel }}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  <div class="row" style="margin-top:14px">
+    <button class="btn primary" type="submit" onclick="return confirm('Execute the selected moves? Files will be moved on disk (undoable).')">Organize selected</button>
+    <span class="help">Unchecking some moves runs a partial organize; sidecar trashing only happens on a full run.</span>
+  </div>
+</form>
+{% else %}
+<div class="card"><p class="empty">Nothing to move — the library is already organized.</p></div>
+{% endif %}
+
+{% if plan.quarantine %}
+<h2>Quarantine ({{ plan.quarantine|length }})</h2>
+<table>
+  <thead><tr><th>Folder</th><th>Author</th><th>Title</th><th>Confidence</th></tr></thead>
+  <tbody>
+    {% for b in plan.quarantine %}
+    <tr><td class="mono">{{ b.source_rel }}</td><td>{{ b.author or '—' }}</td><td>{{ b.title or '—' }}</td>
+      <td>{{ '%.2f'|format(b.confidence) if b.confidence is not none else '—' }}</td></tr>
+    {% endfor %}
+  </tbody>
+</table>
+{% endif %}
+
+{% if plan.conflicts %}
+<h2>Conflicts ({{ plan.conflicts|length }})</h2>
+<table>
+  <thead><tr><th>Book</th><th>Detail</th></tr></thead>
+  <tbody>
+    {% for c in plan.conflicts %}
+    <tr><td class="mono">{{ c.get('book_id', '') }}</td><td>{{ c.get('conflict', c) }}</td></tr>
+    {% endfor %}
+  </tbody>
+</table>
+{% endif %}
+
+{% if plan.duplicates %}
+<h2>Duplicate targets ({{ plan.duplicates|length }})</h2>
+{% for d in plan.duplicates %}
+<div class="card">
+  <div class="mono dest">{{ d.target_rel }}</div>
+  {% for s in d.sources_rel %}<div class="mono meta">← {{ s }}</div>{% endfor %}
+</div>
+{% endfor %}
+{% endif %}
+
+{% block scripts %}
+<script>
+function toggleAll(box) {
+  document.querySelectorAll('.mv').forEach(cb => cb.checked = box.checked);
+}
+</script>
+{% endblock %}
+{% endblock %}

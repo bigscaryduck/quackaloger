@@ -1,0 +1,24 @@
+# Local/self-hosted run. On Unraid, prefer the Community Applications template
+# at unraid/quackaloger.xml instead.
+services:
+  quackaloger:
+    build: .
+    image: quackaloger:latest
+    container_name: quackaloger
+    ports:
+      - "8080:8080"
+    environment:
+      - PUID=99
+      - PGID=100
+      - UMASK=022
+      - TZ=Etc/UTC
+      # Unraid user shares are FUSE/shfs -> inotify is unreliable; poll instead.
+      - QUACK_WATCH_POLLING=1
+      # Secrets (preferred over entering keys in the UI):
+      # - QUACK_OPENAI_API_KEY=sk-...
+      # - QUACK_ANTHROPIC_API_KEY=sk-ant-...
+      # - QUACK_TMDB_API_KEY=...
+    volumes:
+      - ./_config:/config           # persistent state: user config, libraries.json, plans
+      - ./_data:/data               # mount your media here; add libraries under /data/...
+    restart: unless-stopped

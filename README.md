@@ -408,6 +408,37 @@ The Quackaloger never permanently deletes files. Stale sidecar files (metadata.j
 
 **Undo: "file moved by later run"** — Undo the latest run first, or use `undo --force`.
 
+## Web UI (self-hosted)
+
+Quackaloger ships an optional web UI that exposes the full pipeline — configure libraries and API keys, scan for a dry-run plan, **review and approve moves per item**, execute, see history, and undo — plus **folder-watch** that auto-organizes new files.
+
+```bash
+pip install "quackaloger[web]"
+quackaloger-web                 # serves on http://0.0.0.0:8080
+```
+
+Each **library** is one `{folder + domain}` pairing (audiobooks, plex_movies, plex_tv). Add libraries from the dashboard, then **Scan** (always a dry run) → review the plan → **Organize selected**. Every run is journaled and can be undone from the History page. There is **no authentication** by design — run it on a trusted LAN or behind your own reverse proxy.
+
+Useful environment variables (all optional):
+
+| Variable | Purpose | Default |
+|---|---|---|
+| `QUACK_WEB_HOST` / `QUACK_WEB_PORT` | Bind address / port | `0.0.0.0` / `8080` |
+| `QUACK_CONFIG_DIR` | State dir (user config, `libraries.json`, saved plans) | OS user-config dir |
+| `QUACK_BROWSE_ROOTS` | Folders the in-UI directory browser may list (`os.pathsep`-separated) | `/data` or `~` |
+| `QUACK_WATCH_POLLING` | `1` to use polling instead of inotify (recommended on Unraid shares) | unset |
+| `QUACK_OPENAI_API_KEY` / `QUACK_ANTHROPIC_API_KEY` / `QUACK_TMDB_API_KEY` | API keys (preferred over entering them in the UI) | — |
+
+## Docker / Unraid
+
+```bash
+docker compose up --build      # see docker-compose.yml
+```
+
+- Mounts: `/config` (persistent state) and `/data` (your media — add libraries under `/data/...`).
+- `PUID`/`PGID`/`UMASK` set ownership of organized files (Unraid defaults `99`/`100`).
+- On **Unraid**, import the Community Applications template at [`unraid/quackaloger.xml`](unraid/quackaloger.xml). Keep each library's source and destination on the **same user share** so moves are fast renames rather than copy+delete, and leave `QUACK_WATCH_POLLING=1` (user shares are FUSE/shfs and drop inotify events).
+
 ## Supported formats
 
 **Audio (audiobooks):** `.mp3`, `.m4b`, `.m4a`, `.flac`, `.ogg`, `.wma`, `.aac`, `.opus`

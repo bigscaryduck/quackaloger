@@ -1,0 +1,74 @@
+{% extends "base.html" %}
+{% block title %}Dashboard · Quackaloger{% endblock %}
+{% block content %}
+<div class="row">
+  <h1>Libraries</h1>
+  <div class="spacer"></div>
+  <a class="btn primary" href="/libraries/new">+ Add library</a>
+</div>
+
+<p class="meta">
+  Folder-watch:
+  {% if watcher.available %}
+    {% if watcher.running %}<span class="badge ok">running</span>{% else %}<span class="badge">stopped</span>{% endif %}
+    <span class="badge">{{ watcher.watched }} watched</span>
+    <span class="badge">{{ "polling" if watcher.polling else "native" }}</span>
+  {% else %}
+    <span class="badge warn">watchdog not installed</span>
+  {% endif %}
+</p>
+
+{% if not libraries %}
+  <div class="card"><p class="empty">No libraries yet. Add one to get started — point it at a mounted folder and pick a domain (audiobooks, Plex movies, or Plex TV).</p></div>
+{% endif %}
+
+<div class="grid">
+  {% for lib in libraries %}
+  <div class="card">
+    <h3>{{ lib.name or lib.path }}</h3>
+    <div class="meta mono">{{ lib.path }}</div>
+    <div class="row" style="margin-top:8px">
+      <span class="badge pink">{{ lib.domain }}</span>
+      {% if not lib.exists %}<span class="badge err">path missing</span>{% endif %}
+      {% if lib.busy %}<span class="badge warn">job running</span>{% endif %}
+      {% if lib.watch.enabled %}<span class="badge ok">watch: {{ lib.watch.mode }}</span>{% endif %}
+      {% if lib.run_count %}<span class="badge">{{ lib.run_count }} runs</span>{% endif %}
+    </div>
+    {% if lib.last_run %}
+      <div class="meta" style="margin-top:6px">Last run: {{ lib.last_run.started_at|ts }} — {{ lib.last_run.status }}</div>
+    {% endif %}
+    <div class="row" style="margin-top:12px">
+      <form method="post" action="/libraries/{{ lib.id }}/scan">
+        <button class="btn primary small" {% if not lib.exists or lib.busy %}disabled{% endif %}>Scan</button>
+      </form>
+      <a class="btn small" href="/libraries/{{ lib.id }}/edit">Edit</a>
+      <form method="post" action="/libraries/{{ lib.id }}/delete" onsubmit="return confirm('Delete this library entry? (Files are not touched.)')">
+        <button class="btn small danger">Delete</button>
+      </form>
+    </div>
+  </div>
+  {% endfor %}
+</div>
+
+{% if jobs %}
+<h2>Recent activity</h2>
+<table>
+  <thead><tr><th>Started</th><th>Job</th><th>Status</th><th></th></tr></thead>
+  <tbody>
+    {% for job in jobs %}
+    <tr>
+      <td>{{ job.created_at|ts }}</td>
+      <td>{{ job.label }}</td>
+      <td>
+        {% if job.status == 'done' %}<span class="badge ok">done</span>
+        {% elif job.status == 'error' %}<span class="badge err">error</span>
+        {% elif job.status == 'running' %}<span class="badge warn">running</span>
+        {% else %}<span class="badge">{{ job.status }}</span>{% endif %}
+      </td>
+      <td><a href="/jobs/{{ job.id }}">view</a></td>
+    </tr>
+    {% endfor %}
+  </tbody>
+</table>
+{% endif %}
+{% endblock %}
