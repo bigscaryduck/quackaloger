@@ -17,7 +17,11 @@ from quackaloger.models import (
     PlanReport,
 )
 from quackaloger.constants import TOOL_DIR_NAME
-from quackaloger.plex_discovery import scan_movie_books, scan_tv_episode_books
+from quackaloger.plex_discovery import (
+    _resolve_tv_file,
+    scan_movie_books,
+    scan_tv_episode_books,
+)
 from quackaloger.reporting import build_plan, collect_review_leftovers, explain_outcome
 from quackaloger.tmdb import movie_candidate, tv_candidate
 
@@ -68,6 +72,48 @@ class DiscoveryPartitionTests(unittest.TestCase):
         movies = set(self._names(scan_movie_books(self.lib.root)))
         tv = set(self._names(scan_tv_episode_books(self.lib.root)))
         self.assertEqual(movies & tv, set())
+
+
+class SeeNumberingTests(unittest.TestCase):
+    """Old cartoon/anime "Show - 101 - Title" 3-digit episode codes."""
+
+    def test_three_digit_see_matches(self):
+        show, season, episode, title = _resolve_tv_file(
+            "Biker Mice from Mars (2006) - 101 - The Adventure begins (1) [jpv711]",
+            "Biker Mice From Mars (2006)", "TV Shows",
+        )
+        self.assertEqual((season, episode), (1, 1))
+        self.assertIn("Biker Mice", show)
+        self.assertEqual(title, "The Adventure begins (1)")  # release tag stripped
+
+    def test_high_episode_in_season_one(self):
+        _, season, episode, _ = _resolve_tv_file(
+            "Biker Mice from Mars (2006) - 128 - Turf Wars", "Biker Mice From Mars (2006)", "x",
+        )
+        self.assertEqual((season, episode), (1, 28))
+
+    def test_resolution_codec_year_do_not_false_match(self):
+        for stem in [
+            "Some.Movie.2006.1080p.WEB-DL.x264-GRP",
+            "Random Doc 720p H 264-RAWR",
+            "Plain Title No Episode",
+        ]:
+            self.assertIsNone(_resolve_tv_file(stem, "Folder", "TV Shows"), stem)
+
+    def test_explicit_markers_still_win(self):
+        _, season, episode, _ = _resolve_tv_file(
+            "MADtv - S05 E07 - The 100th Episode", "MADtv", "x",
+        )
+        self.assertEqual((season, episode), (5, 7))
+
+    def test_movies_skip_see_episodes(self):
+        d = tempfile.mkdtemp()
+        _touch(os.path.join(d, "Biker Mice From Mars (2006)",
+                            "Biker Mice from Mars (2006) - 101 - The Adventure begins.avi"))
+        _touch(os.path.join(d, "Real Movie (2010) 1080p.avi"))
+        movies = sorted(os.path.basename(f.filepath)
+                        for b in scan_movie_books(d) for f in b.files)
+        self.assertEqual(movies, ["Real Movie (2010) 1080p.avi"])
 
 
 class CrossDomainDedupTests(unittest.TestCase):

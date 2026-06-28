@@ -16,6 +16,12 @@ SEASON_DIR_RE = re.compile(r"^Season\s+(\d+)$", re.IGNORECASE)
 # SxxEyy (optional space) and the 1x02 alternate form.
 SXXEYY_RE = re.compile(r"S(\d{1,2})\s*E(\d{1,3})", re.IGNORECASE)
 NXNN_RE = re.compile(r"(?<![A-Za-z0-9])(\d{1,2})x(\d{2,3})(?![A-Za-z0-9])", re.IGNORECASE)
+# Old cartoon/anime "SEE" shorthand: a dash-delimited 3/4-digit code where the
+# leading digit(s) are the season and the last two are the episode, e.g.
+# "Show - 101 - Title" => S01E01, "Show - 1015" => S10E15. The required leading
+# dash and trailing non-alphanumeric keep it from matching resolutions/codecs/
+# years (720p, x264, 2006).
+SEE_RE = re.compile(r"[-–]\s*([1-9]\d?)(\d\d)(?![A-Za-z0-9])")
 # Leading indexer/site noise like "www.UIndex.org    -    "
 SITE_PREFIX_RE = re.compile(r"^\s*www\.\S+\s*-\s*", re.IGNORECASE)
 # First release/quality token marks the end of any human-meaningful text.
@@ -53,6 +59,18 @@ def _match_episode(name: str):
     return None
 
 
+def _match_see(name: str):
+    """Find a dash-delimited 3/4-digit SEE code. Returns (season, episode, start, end) or None.
+
+    Used only as a fallback when no SxxEyy/1x02 marker exists. ``start`` points at
+    the delimiting dash so the show title (text before it) excludes the code.
+    """
+    m = SEE_RE.search(name)
+    if not m:
+        return None
+    return int(m.group(1)), int(m.group(2)), m.start(), m.end()
+
+
 def _show_title_from(before: str) -> str:
     """Show name = the text preceding the SxxEyy marker, minus site noise."""
     return _normalize_name(SITE_PREFIX_RE.sub("", before))
@@ -64,6 +82,7 @@ def _episode_title_from(after: str) -> str:
     jm = JUNK_TOKEN_RE.search(s)
     if jm:
         s = s[: jm.start()]
+    s = re.sub(r"\[[^\]]*\]", " ", s)  # drop [release-group] tags
     return _normalize_name(s)
 
 
@@ -94,9 +113,19 @@ def _resolve_tv_file(stem: str, parent: str, grandparent: str):
     sm = SEASON_DIR_RE.match(parent)
     if sm:
         season = int(sm.group(1))
-        em = SXXEYY_RE.search(stem) or NXNN_RE.search(stem)
+        em = SXXEYY_RE.search(stem) or NXNN_RE.search(stem) or SEE_RE.search(stem)
         episode = int(em.group(2)) if em else None
         return _normalize_name(grandparent), season, episode, ""
+
+    # 4) Dash-delimited 3/4-digit "SEE" numbering, e.g. "Show - 101 - Title" (old
+    #    cartoon/anime rips). Last resort, after explicit markers fail.
+    hit = _match_see(stem)
+    if hit:
+        season, episode, s, e = hit
+        show = _show_title_from(stem[:s])
+        if not show:
+            show = _normalize_name(SITE_PREFIX_RE.sub("", parent)) or _normalize_name(grandparent)
+        return show, season, episode, _episode_title_from(stem[e:])
 
     return None
 
@@ -106,8 +135,9 @@ def scan_movie_books(library_root: str, *, verbose: bool = False) -> list[Book]:
 
     Anything that looks like a TV episode is left for the plex_tv domain: files
     inside a ``Season NN`` folder, and files whose name or containing folder
-    carries an SxxEyy/1x02 marker. This keeps episodes out of the movie plan and
-    prevents the two Plex domains from both claiming the same file.
+    carries an SxxEyy/1x02 marker or a dash-delimited 3/4-digit SEE code. This
+    keeps episodes out of the movie plan and prevents the two Plex domains from
+    both claiming the same file.
     """
     library_root = os.path.abspath(library_root)
     by_parent: dict[str, list[str]] = defaultdict(list)
@@ -124,7 +154,8 @@ def scan_movie_books(library_root: str, *, verbose: bool = False) -> list[Book]:
             if SEASON_DIR_RE.match(base):
                 continue
             stem = os.path.splitext(fn)[0]
-            if _match_episode(stem) or _match_episode(base):
+            if (_match_episode(stem) or _match_episode(base)
+                    or _match_see(stem) or _match_see(base)):
                 skipped_episodes += 1
                 if verbose:
                     ui.verbose(f"[plex_movies] Skipped TV episode (left for plex_tv): {fn}")
